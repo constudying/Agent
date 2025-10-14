@@ -54,7 +54,7 @@ def train(config, device):
     if not os.path.exists(dataset_path):
         raise Exception("Dataset at provided path {} not found!".format(dataset_path))
 
-        # load basic metadata from training file
+    # load basic metadata from training file
     print("\n============= Loaded Environment Metadata =============")
     env_meta = FileUtils.get_env_metadata_from_dataset(dataset_path=config.train.data)
     shape_meta = FileUtils.get_shape_metadata_from_dataset(

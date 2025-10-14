@@ -5,7 +5,7 @@ import torch
 
 import robomimic.utils.tensor_utils as TensorUtils
 from agent.models.obs_nets import MIMO_Transformer
-from agent.models.base_nets import ResNetFiLM
+
 
 class TransformerActorNetwork(MIMO_Transformer):
     """
@@ -19,12 +19,12 @@ class TransformerActorNetwork(MIMO_Transformer):
         transformer_num_layers,
         transformer_num_heads,
         transformer_context_length,
-        transformer_attn_dropout=0.1,
-        transformer_output_dropout=0.1,
-        transformer_sinusoidal_embedding=False,
-        transformer_activation="relu",
-        transformer_causal=True,
-        transformer_nn_parameter_for_timesteps=False,
+        transformer_attn_dropout=None,
+        transformer_output_dropout=None,
+        transformer_sinusoidal_embedding=None,
+        transformer_activation=None,
+        transformer_causal=None,
+        transformer_nn_parameter_for_timesteps=None,
         goal_shapes=None,
         encoder_kwargs=None,
     ):
@@ -97,9 +97,9 @@ class TransformerActorNetwork(MIMO_Transformer):
             input_obs_group_shapes=observation_group_shapes,
             output_shapes=output_shapes,
             transformer_embed_dim=transformer_embed_dim,
+            transformer_context_length=transformer_context_length,
             transformer_num_layers=transformer_num_layers,
             transformer_num_heads=transformer_num_heads,
-            transformer_context_length=transformer_context_length,
             transformer_attn_dropout=transformer_attn_dropout,
             transformer__output_dropout=transformer_output_dropout,
             transformer_sinusoidal_embedding=transformer_sinusoidal_embedding,
@@ -173,9 +173,14 @@ class ImageTransformerActorNetwork(TransformerActorNetwork):
         transformer_activation="relu",
         transformer_causal=True,
         transformer_nn_parameter_for_timesteps=False,
+        use_tanh=False,
         goal_shapes=None,
         encoder_kwargs=None,
     ):
+        
+        
+        self.use_tanh = use_tanh
+
         super(ImageTransformerActorNetwork, self).__init__(
             obs_shapes=obs_shapes,
             ac_dim=ac_dim,
@@ -193,13 +198,17 @@ class ImageTransformerActorNetwork(TransformerActorNetwork):
             encoder_kwargs=encoder_kwargs,
         )
 
-        self.nets["image_processor"] = ResNetFiLM(encoder_kwargs)
 
     def _get_output_shapes(self):
         raise NotImplementedError
-
-    def output_shape(self, input_shape):
-        raise NotImplementedError
+    
+    def forward_train(self, obs_dict, goal_dict=None, return_latent=False):
+        if return_latent:
+            dec_outputs, enc_outputs = MIMO_Transformer.forward(self, return_latent=return_latent, obs=obs_dict, goal=goal_dict)
+            return dict(action=dec_outputs["action"], latent=enc_outputs["latent"])
+        else:
+            dec_outputs = MIMO_Transformer.forward(self, return_latent=return_latent, obs=obs_dict, goal=goal_dict)
+            return dict(action=dec_outputs["action"])
 
     def forward(self, obs_dict, actions=None, goal_dict=None):
         
@@ -208,6 +217,9 @@ class ImageTransformerActorNetwork(TransformerActorNetwork):
         outputs = super(TransformerActorNetwork, self).forward(**forward_kwargs)
 
         return outputs["action"]
+    
+    def output_shape(self, input_shape):
+        raise NotImplementedError
 
     def _to_string(self):
         raise NotImplementedError

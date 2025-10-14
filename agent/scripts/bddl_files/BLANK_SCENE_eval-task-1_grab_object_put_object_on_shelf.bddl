@@ -1,0 +1,9 @@
+(define (problem LIBERO_BLANK_Tabletop_Manipulation)
+  (:domain robosuite)
+  (:language grab the white cube and put it on the cabinet)
+    (:regions
+      (white_cube_init_region
+        (:target)
+      )
+    )
+)

@@ -39,6 +39,7 @@ class AgentConfig(BaseConfig):
         # MLP network architecture (layers after observation encoder and RNN, if present)
         self.algo.actor_layer_dims = (1024, 1024)
 
+
         # stochastic Gaussian policy settings
         self.algo.gaussian.enabled = False              # whether to train a Gaussian policy
         self.algo.gaussian.fixed_std = False            # whether to train std output or keep it constant

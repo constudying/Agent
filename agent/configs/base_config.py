@@ -1,8 +1,8 @@
 import six # preserve metaclass compatibility between python 2 and 3
 from copy import deepcopy
 
-import robomimic
-from agent.configs.config import Config
+import robomimic.config.base_config as BaseConfigModule
+from robomimic.configs.config import Config
 
 # global dictionary for remembering name - class mappings
 REGISTERED_CONFIGS = {}

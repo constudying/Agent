@@ -79,86 +79,8 @@
         ],
         "resnet": {
             "enabled": true,
-            "input_channels": 3,
-            "film_net_class": "mlp",
-            "film_net_kwargs": {
-                "obs_shapes": 512,
-                "layer_dims": [
-                    256,
-                    128,
-                    64
-                ],
-                "layer_func": "linear",
-                "activation": "relu"
-            },
-            "conv_layer_num": 4,
-            "net_params": {
-                "block1": {
-                    "conv1_params": {
-                        "out_channels": 32,
-                        "kernel_size": 3,
-                        "stride": 1,
-                        "padding": 1
-                    },
-                    "conv2_params": {
-                        "out_channels": 32,
-                        "kernel_size": 3,
-                        "stride": 1,
-                        "padding": 1
-                    },
-                    "shortcut_params": null,
-                    "film_enable": true
-                },
-                "block2": {
-                    "conv1_params": {
-                        "out_channels": 64,
-                        "kernel_size": 3,
-                        "stride": 1,
-                        "padding": 1
-                    },
-                    "conv2_params": {
-                        "out_channels": 64,
-                        "kernel_size": 3,
-                        "stride": 1,
-                        "padding": 1
-                    },
-                    "shortcut_params": null,
-                    "film_enable": true
-                },
-                "block3": {
-                    "conv1_params": {
-                        "out_channels": 128,
-                        "kernel_size": 3,
-                        "stride": 1,
-                        "padding": 1
-                    },
-                    "conv2_params": {
-                        "out_channels": 128,
-                        "kernel_size": 3,
-                        "stride": 1,
-                        "padding": 1
-                    },
-                    "shortcut_params": null,
-                    "film_enable": true
-                },
-                "block4": {
-                    "conv1_params": {
-                        "out_channels": 256,
-                        "kernel_size": 3,
-                        "stride": 1,
-                        "padding": 1
-                    },
-                    "conv2_params": {
-                        "out_channels": 256,
-                        "kernel_size": 3,
-                        "stride": 1,
-                        "padding": 1
-                    },
-                    "shortcut_params": null,
-                    "film_enable": true
-                }
-            },
-            "activation": "relu",
+            "output_dim": 256,
+            "pretrained": false,
             "input_coord_conv": false
         },
         "transformer": {
@@ -240,7 +162,7 @@
             "latent_plan_dim": 400
         },
         "lowlevel": {
-            "enabled": false,
+            "enabled": true,
             "feat_dim": 656,
             "n_layer": 4,
             "n_head": 4,

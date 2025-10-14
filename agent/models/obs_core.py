@@ -5,14 +5,14 @@ import textwrap
 import torch
 import torch.nn as nn
 
-import agent.models.base_nets as BaseNets
+
 import robomimic.utils.obs_utils as ObsUtils
 from robomimic.utils.python_utils import extract_class_init_kwargs_from_dict
+from robomimic.models.obs_core import VisualCore, EncoderCore
 
-from robomimic.models.obs_core import EncoderCore
+import agent.models.base_nets as BaseNets
 
-
-class VisualCore(EncoderCore):
+class AgentVisualCore(VisualCore):
     """
     视觉观测量处理网络的基础类
     """
@@ -21,13 +21,13 @@ class VisualCore(EncoderCore):
         input_shape,
         backbone_class="ResNetFiLM",
         backbone_kwargs=None,
-        pool=None,
+        pool_kwargs=None,
         flatten=None,
         feature_dim=None,
     ):
-        super(VisualCore, self).__init__(input_shape=input_shape)
+        super(AgentVisualCore, self).__init__(input_shape=input_shape)
         assert backbone_class is None, "VisualCore: @backbone has not been provided yet."
-        assert pool is None, "VisualCore: @pool has not been provided yet."
+        assert pool_kwargs is None, "VisualCore: @pool has not been provided yet."
         assert flatten is None, "VisualCore: @flatten has not been provided yet."
         assert feature_dim is None, "VisualCore: @feature_dim has not been provided yet."
 
@@ -48,7 +48,7 @@ class VisualCore(EncoderCore):
         feat_shape = self.backbone.output_shape(input_shape)
         net_list = [self.backbone]
 
-        if pool is not None:
+        if pool_kwargs is not None:
             pass
         else:
             self.pool = None

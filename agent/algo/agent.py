@@ -5,10 +5,12 @@ import h5py
 import torch
 import torch.nn as nn
 
+import agent.models.policy_nets as PolicyNets
 import robomimic.utils.tensor_utils as TensorUtils
+import robomimic.utils.torch_utils as TorchUtils
 
 from algo.algo import register_algo_factory_func, PolicyAlgo
-from agent.models.policy_nets import PolicyNets
+
 
 @register_algo_factory_func("agent")
 def algo_config_to_class(algo_config):
@@ -49,15 +51,15 @@ class Image_Single_pretrain(PolicyAlgo):
             obs_shapes=self.obs_shapes,
             goal_shapes=self.goal_shapes,
             ac_dim=self.ac_dim,
-            transfor_embed_dim=self.algo_config.transformer.transformer_embed_dim,
-            transformer_num_layers=self.algo_config.transformer.transformer_num_layers,
-            transformer_num_heads=self.algo_config.transformer.transformer_num_heads,
-            transformer_context_length=self.algo_config.transformer.transformer_context_length,
-            transformer_attn_dropout=self.algo_config.transformer.transformer_attn_dropout,
-            transformer_output_dropout=self.algo_config.transformer.transformer_output_dropout,
+            transfor_embed_dim=self.algo_config.transformer.embed_dim,
+            transformer_num_layers=self.algo_config.transformer.num_layers,
+            transformer_num_heads=self.algo_config.transformer.num_heads,
+            transformer_context_length=self.algo_config.transformer.context_length,
+            transformer_attn_dropout=self.algo_config.transformer.attn_dropout,
+            transformer_output_dropout=self.algo_config.transformer.output_dropout,
             transformer_sinusoidal_embedding=self.algo_config.transformer.transformer_sinusoidal_embedding,
-            transformer_activation=self.algo_config.transformer.transformer_activation,
-            transformer_causal=self.algo_config.transformer.transformer_causal,
+            transformer_activation=self.algo_config.transformer.activation,
+            transformer_causal=self.algo_config.transformer.causal,
             transformer_nn_parameter_for_timesteps=self.algo_config.transformer.transformer_nn_parameter_for_timesteps,
             encoder_kwargs=self.algo_config.encoder_kwargs,
         )
@@ -70,8 +72,44 @@ class Image_Single_pretrain(PolicyAlgo):
         """
         TODO:占位实现，直接返回输入 batch，需要后续补充具体逻辑。
         """
-        return batch
+        batch["goal_obs"]["agentview_image"] = batch["goal_obs"]["agentview_image"][:, 0]
+
+        return TensorUtils.to_device(TensorUtils.to_float(batch), self.device)
+
+    def train_on_batch(self, batch, epoch, validate=False):
+
+        with TorchUtils.maybe_no_grad(no_grad=validate):
+            info = super(Image_Single_pretrain, self).train_on_batch(batch, epoch, validate=validate)
+            predictions = self._forward_training(batch)
+            losses = self._compute_losses(predictions)
+
+            info["predictions"] = TensorUtils.detach(predictions)
+            info["losses"] = TensorUtils.detach(losses)
+
+            if not validate:
+                step_info = self._train_step(losses)
+                info.update(step_info)
+        
+        return info
     
+    def _get_latent_plan(self, obs, goal):
+        assert 'agentview_image' in obs.keys(), "obs中必须包含agentview_image"
+
+        if len(obs['agentview_image'].size) == 5:
+            bs, seq, c, h, w = obs['agentview_image'].size()
+
+            for item in ['agentview_image']:
+                obs[item] = obs[item].view(bs * seq, c, h, w)
+                goal[item] = goal[item].view(bs * seq, c, h, w)
+            
+            dec_out, enc_out = self.nets["policy"].forward_train(
+                obs_dict=obs,
+                goal_dict=goal,
+                return_latent=True
+            )
+
+        return dec_out, enc_out
+
     def _forward_training(self, batch):
         """
         模型训练时使用，通过字典，返回网络输出
@@ -88,21 +126,51 @@ class Image_Single_pretrain(PolicyAlgo):
         )
         return predictions
     
-    def _compute_losses(self, predictions):
+    def _compute_losses(self, predictions, batch):
         """
         TODO：可用损失还有待补充，如果没有，考虑和_forward_training方法合并
         """
-        return predictions
+        losses = OrderedDict()
+        a_target = batch["actions"]
+        actions = predictions["action_out"]
+        losses["l1_loss"] = nn.SmoothL1Loss()(actions, a_target)
+        losses["l2_loss"] = nn.MSELoss()(actions, a_target)
+
+        action_losses = [
+            self.algo_config.loss.l1_weight * losses["l1_loss"],
+            self.algo_config.loss.l2_weight * losses["l2_loss"],
+        ]
+        action_loss = sum(action_losses)
+        losses["action_loss"] = action_loss
+        return losses
+    
+    def _train_step(self, losses):
+        """
+        根据损失进行反向传播和优化
+        """
+        info = OrderedDict()
+        policy_grad_norms = TorchUtils.backprop_for_loss(
+            net=self.nets["policy"],
+            optim=self.optimizers["policy"],
+            loss=losses["action_loss"],
+        )
+        info["policy_grad_norms"] = policy_grad_norms
+        return info
     
     def log_info(self, info):
         """
         总结训练信息，用于tensorboard输出日志
         """
-        log = PolicyAlgo.log_info(self, info)
+        log = super(Image_Single_pretrain, self).log_info(info)
         log["Loss"] = info["losses"]["action_loss"].item()
+        if "l1_loss" in info["losses"]:
+            log["L1_Loss"] = info["losses"]["l1_loss"].item()
+        if "l2_loss" in info["losses"]:
+            log["L2_Loss"] = info["losses"]["l2_loss"].item()
         if "policy_grad_norms" in info:
             log["Policy_Grad_Norms"] = info["policy_grad_norms"]
         return log
+
 
 class Action_Single_pretrain(PolicyAlgo):
     """

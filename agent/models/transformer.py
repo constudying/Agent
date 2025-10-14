@@ -247,7 +247,7 @@ class NormalTransformerBlock(Module):
         output_dropout=0.1,
         ffw_hidden_dim=None,
         ffw_dropout=None,
-        activation="relu",
+        activation=nn.ReLU,
     ):
         super(NormalTransformerBlock, self).__init__()
         self.embed_dim = embed_dim
@@ -257,7 +257,7 @@ class NormalTransformerBlock(Module):
         self.output_dropout = output_dropout
         self.ffw_hidden_dim = ffw_hidden_dim if ffw_hidden_dim is not None else 4 * embed_dim
         self.ffw_dropout = ffw_dropout if ffw_dropout is not None else output_dropout
-        self.activation = get_activation(activation)
+        self.activation = activation()
         self.nets = nn.ModuleDict()
 
         self.nets["attention"] = NormalSelfAttention(
@@ -302,7 +302,7 @@ class CausalTransformerBlock(Module):
         output_dropout=0.1,
         ffw_hidden_dim=None,
         ffw_dropout=None,
-        activation="relu",
+        activation=nn.ReLU,
     ):
         super(CausalTransformerBlock, self).__init__()
         self.embed_dim = embed_dim
@@ -312,7 +312,7 @@ class CausalTransformerBlock(Module):
         self.output_dropout = output_dropout
         self.ffw_hidden_dim = ffw_hidden_dim if ffw_hidden_dim is not None else 4 * embed_dim
         self.ffw_dropout = ffw_dropout if ffw_dropout is not None else output_dropout
-        self.activation = get_activation(activation)
+        self.activation = activation()
         self.nets = nn.ModuleDict()
 
         self.nets["attention"] = CausalSelfAttention(
@@ -355,11 +355,11 @@ class TransformerBackbone(Module):
         context_length,
         attn_dropout=0.1,
         output_dropout=0.1,
-        ffw_hidden_dim=None,
+        ffw_hidden_dim=1024,
         ffw_dropout=None,
         num_heads=8,
         num_blocks=6,
-        activation="relu",
+        activation=nn.ReLU,
         causal=True,
     ):
         super(TransformerBackbone, self).__init__()
@@ -371,7 +371,7 @@ class TransformerBackbone(Module):
         self.output_dropout = output_dropout
         self.ffw_hidden_dim = ffw_hidden_dim if ffw_hidden_dim is not None else 4 * embed_dim
         self.ffw_dropout = ffw_dropout if ffw_dropout is not None else output_dropout
-        self.activation = get_activation(activation)
+        self.activation = activation()
         self.causal = causal
 
     def _create_networks(self):
