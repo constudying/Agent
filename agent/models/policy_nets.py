@@ -4,10 +4,69 @@ from collections import OrderedDict
 import torch
 
 import robomimic.utils.tensor_utils as TensorUtils
-from agent.models.obs_nets import MIMO_Transformer
+from agent.models.obs_nets import RESNET_MIMO_Transformer, RESNET_MIMO_MLP
 
 
-class TransformerActorNetwork(MIMO_Transformer):
+class MlpActorNetwork(RESNET_MIMO_MLP):
+    """
+    基于MLP结构，根据输入的观察模态预测动作的基础策略网络
+    """
+    def __init__(
+        self,
+        obs_shapes,
+        ac_dim,
+        mlp_layer_dims,
+        goal_shapes=None,
+        encoder_kwargs=None,
+    ):
+        assert isinstance(obs_shapes, OrderedDict)
+        self.obs_shapes = obs_shapes
+        self.ac_dim = ac_dim
+
+        observation_group_shapes = OrderedDict()
+        observation_group_shapes["obs"] = OrderedDict(self.obs_shapes)
+
+        self._is_goal_conditioned = False
+        if goal_shapes is not None and len(goal_shapes) > 0:
+            assert isinstance(goal_shapes, OrderedDict)
+            self._is_goal_conditioned = True
+            self.goal_shapes = OrderedDict(goal_shapes)
+            observation_group_shapes["goal"] = OrderedDict(self.goal_shapes)
+        else:
+            self.goal_shapes = OrderedDict()
+
+        output_shapes = self._get_output_shapes()
+        super(MlpActorNetwork, self).__init__(
+            input_obs_group_shapes=observation_group_shapes,
+            output_shapes=output_shapes,
+            layer_dims=mlp_layer_dims,
+            **encoder_kwargs,
+        )
+
+    def _get_output_shapes(self):
+        return OrderedDict(action=(self.ac_dim,))
+    
+    def output_shape(self, input_shape):
+        return [self.ac_dim]
+    
+    def forward_training(self, obs_dict, goal_dict=None):
+        actions = super(MlpActorNetwork, self).forward(obs=obs_dict, goal=goal_dict)["action"]
+        return actions
+    
+    def forward(self, obs_dict, goal_dict=None):
+        actions = super(MlpActorNetwork, self).forward(obs=obs_dict, goal=goal_dict)["action"]
+        return actions
+    
+    def _to_string(self):
+        """Info to pretty print."""
+        return "action_dim={}".format(self.ac_dim)
+
+
+class GMMMlpActorNetwork(MlpActorNetwork):
+
+
+
+class TransformerActorNetwork(RESNET_MIMO_Transformer):
     """
     基于transformer结构，根据输入的观察模态预测动作的基础策略网络
     """
@@ -155,7 +214,7 @@ class TransformerActorNetwork(MIMO_Transformer):
         return "action_dim={}".format(self.ac_dim) 
 
 
-class ImageTransformerActorNetwork(TransformerActorNetwork):
+class ImageActorNetwork(TransformerActorNetwork):
     """
     基于transformer结构，根据输入的图像观察预测动作的策略网络
     """
@@ -181,7 +240,7 @@ class ImageTransformerActorNetwork(TransformerActorNetwork):
         
         self.use_tanh = use_tanh
 
-        super(ImageTransformerActorNetwork, self).__init__(
+        super(ImageActorNetwork, self).__init__(
             obs_shapes=obs_shapes,
             ac_dim=ac_dim,
             transformer_embed_dim=transformer_embed_dim,
@@ -204,10 +263,10 @@ class ImageTransformerActorNetwork(TransformerActorNetwork):
     
     def forward_train(self, obs_dict, goal_dict=None, return_latent=False):
         if return_latent:
-            dec_outputs, enc_outputs = MIMO_Transformer.forward(self, return_latent=return_latent, obs=obs_dict, goal=goal_dict)
+            dec_outputs, enc_outputs = RESNET_MIMO_Transformer.forward(self, return_latent=return_latent, obs=obs_dict, goal=goal_dict)
             return dict(action=dec_outputs["action"], latent=enc_outputs["latent"])
         else:
-            dec_outputs = MIMO_Transformer.forward(self, return_latent=return_latent, obs=obs_dict, goal=goal_dict)
+            dec_outputs = RESNET_MIMO_Transformer.forward(self, return_latent=return_latent, obs=obs_dict, goal=goal_dict)
             return dict(action=dec_outputs["action"])
 
     def forward(self, obs_dict, actions=None, goal_dict=None):
