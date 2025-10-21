@@ -5,31 +5,31 @@ import textwrap
 import torch
 import torch.nn as nn
 
-
+import agent.models.base_nets as BaseNets
+import robomimic.utils.tensor_utils as TensorUtils
 import robomimic.utils.obs_utils as ObsUtils
 from robomimic.utils.python_utils import extract_class_init_kwargs_from_dict
-from robomimic.models.obs_core import VisualCore, EncoderCore
 
-import agent.models.base_nets as BaseNets
+from agent.models.base_nets import *
+from robomimic.models.obs_core import EncoderCore
 
-class AgentVisualCore(VisualCore):
+class AgentVisualCore(EncoderCore, BaseNets.ConvBase):
     """
     视觉观测量处理网络的基础类
     """
     def __init__(
         self,
         input_shape,
-        backbone_class="ResNetFiLM",
+        backbone_class="ResNetFiLM", # NOTE: backbone class must be provided
         backbone_kwargs=None,
         pool_kwargs=None,
         flatten=None,
-        feature_dim=None,
+        feature_dimension=None,
     ):
         super(AgentVisualCore, self).__init__(input_shape=input_shape)
-        assert backbone_class is None, "VisualCore: @backbone has not been provided yet."
-        assert pool_kwargs is None, "VisualCore: @pool has not been provided yet."
-        assert flatten is None, "VisualCore: @flatten has not been provided yet."
-        assert feature_dim is None, "VisualCore: @feature_dim has not been provided yet."
+        assert backbone_class is not None and backbone_kwargs is not None, "VisualCore: @backbone has not been provided yet."
+        
+        self.flatten = flatten
 
         if backbone_kwargs is None:
             backbone_kwargs = dict()
@@ -37,9 +37,13 @@ class AgentVisualCore(VisualCore):
         backbone_kwargs["input_channel"] = input_shape[0]
 
         backbone_kwargs = extract_class_init_kwargs_from_dict(
-                cls = ObsUtils.OBS_ENCODER_BACKBONES[backbone_class],
-                dic=backbone_kwargs, copy=True)
+                cls = eval(backbone_class),
+                dic=backbone_kwargs,
+                copy=True
+        )
         
+        assert isinstance(backbone_class, str), \
+            "VisualCore: @backbone_class must be a string representing the backbone class name"
         self.backbone = eval(backbone_class)(**backbone_kwargs)
 
         assert isinstance(self.backbone, BaseNets.ConvBase), \
@@ -49,7 +53,7 @@ class AgentVisualCore(VisualCore):
         net_list = [self.backbone]
 
         if pool_kwargs is not None:
-            pass
+            self.pool = None
         else:
             self.pool = None
         
@@ -58,10 +62,10 @@ class AgentVisualCore(VisualCore):
             net_list.append(torch.nn.Flatten(start_dim=1, end_dim=-1))
         
         # maybe linear layer
-        self.feature_dim = feature_dim
-        if feature_dim is not None:
-            assert self.flatten, "VisualCore: @feature_dim requires @flatten=True"
-            linear = torch.nn.Linear(int(np.prod(feat_shape)), feature_dim)
+        self.feature_dimension = feature_dimension
+        if feature_dimension is not None:
+            assert self.flatten, "VisualCore: @feature_dimension requires @flatten=True"
+            linear = torch.nn.Linear(int(np.prod(feat_shape)), self.feature_dimension)
             net_list.append(linear)
         
         self.nets = nn.Sequential(*net_list)
@@ -85,8 +89,9 @@ class AgentVisualCore(VisualCore):
         Forward pass through visual core.
         """
         ndim = len(self.input_shape)
+        # # inputs.shape: torch.Size([32, 1, 3, 84, 84])
         assert tuple(inputs.shape)[-ndim:] == tuple(self.input_shape)
-        return super(VisualCore, self).forward(inputs)
+        return super(AgentVisualCore, self).forward(inputs)
 
     def __repr__(self):
         """Pretty print network."""

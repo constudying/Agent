@@ -1,5 +1,10 @@
 assets/
 
-datasets/
+agent/datasets/
 
 *.mp4
+
+trained_models_*/
+
+agent.egg-info/
+

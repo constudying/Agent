@@ -55,7 +55,7 @@ from copy import deepcopy
 import torch
 
 import robomimic
-import mimicplay.utils.file_utils as FileUtils
+import agent.utils.file_utils as FileUtils
 import robomimic.utils.torch_utils as TorchUtils
 import robomimic.utils.tensor_utils as TensorUtils
 import robomimic.utils.obs_utils as ObsUtils

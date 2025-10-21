@@ -67,7 +67,7 @@ def main():
     parser.add_argument("-i", "--input", 
                         type=str, 
                         default="./datasets/playdata/demo.hdf5",
-                        help="Path to the input XML file")
+                        help="Path to the input HDF5 file")
     parser.add_argument("--override", 
                         action="store_true", 
                         help="Override the input file with changes")

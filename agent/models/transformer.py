@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from agent.models import get_activation
+from agent.models.base_nets import get_activation
 from robomimic.models.base_nets import Module
 
 class PositionEncoder(nn.Module):

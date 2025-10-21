@@ -49,9 +49,8 @@ class MlpActorNetwork(RESNET_MIMO_MLP):
     def output_shape(self, input_shape):
         return [self.ac_dim]
     
-    def forward_training(self, obs_dict, goal_dict=None):
-        actions = super(MlpActorNetwork, self).forward(obs=obs_dict, goal=goal_dict)["action"]
-        return actions
+    def forward_train(self, obs_dict, goal_dict=None):
+        return super(MlpActorNetwork, self).forward(obs=obs_dict, goal=goal_dict)
     
     def forward(self, obs_dict, goal_dict=None):
         actions = super(MlpActorNetwork, self).forward(obs=obs_dict, goal=goal_dict)["action"]
@@ -63,7 +62,7 @@ class MlpActorNetwork(RESNET_MIMO_MLP):
 
 
 class GMMMlpActorNetwork(MlpActorNetwork):
-
+    pass
 
 
 class TransformerActorNetwork(RESNET_MIMO_Transformer):

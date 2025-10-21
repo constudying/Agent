@@ -16,9 +16,9 @@ import torch
 import robomimic.utils.obs_utils as ObsUtils
 import robomimic.utils.env_utils as EnvUtils
 import robomimic.utils.torch_utils as TorchUtils
-from mimicplay.configs import config_factory
-from mimicplay.algo import algo_factory
-from mimicplay.algo import RolloutPolicy
+from agent.configs import config_factory
+from agent.algo import algo_factory
+from agent.algo import RolloutPolicy
 
 
 def create_hdf5_filter_key(hdf5_path, demo_keys, key_name):

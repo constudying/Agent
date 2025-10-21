@@ -37,6 +37,9 @@ def process_dataset(dataset_file):
         for i in range(0, DEMO_COUNT):
             # Extract the robot0_eef_pos data
             eef_pos = f[f'data/demo_{i}/obs/robot0_eef_pos'][...]
+            # [...]和[()]的区别：
+            # [...]：是python中的省略号对象，返回一个 NumPy 数组，包含数据集对应键的所有数据，一般是多维数组（会将该数据集的所有数据读取到内存中，转换为 NumPy 数组）
+            # [()]：对于标量返回python原生类型，对于数组返回 NumPy 数组，一般读取单个值或小数组（其中无多个维度）
 
             # Calculate the future trajectory for each data point
             future_traj_data = np.array([get_future_points(eef_pos[j:]) for j in range(len(eef_pos))])

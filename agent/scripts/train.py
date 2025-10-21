@@ -21,17 +21,12 @@ import robomimic.utils.env_utils as EnvUtils
 import robomimic.utils.file_utils as FileUtils
 from robomimic.utils.log_utils import PrintLogger, DataLogger
 from agent.utils.train_utils import get_exp_dir, rollout_with_stats, load_data_for_training
-from agent.utils.debug_utils import (
-    print_model_parameter_devices,
-    print_batch_device_report,
-    assert_batch_on_device,
-)
 
 from agent.configs.base_config import config_factory
 from agent.algo.algo import algo_factory, RolloutPolicy
 
 
-def train(config, device, device_debug=False):
+def train(config, device):
     """
     训练主函数，调用特定算法训练指定模型
     """
@@ -119,9 +114,6 @@ def train(config, device, device_debug=False):
         ac_dim=shape_meta["ac_dim"],
         device=device,
     )
-    if device_debug:
-        # Print where model parameters live
-        print_model_parameter_devices(model.nets)
     if config.experiment.rollout.enabled:                     # load task video prompt (used for evaluation rollouts during the gap of training)
         model.load_eval_video_prompt(args.video_prompt)
 
@@ -156,25 +148,6 @@ def train(config, device, device_debug=False):
         num_workers=config.train.num_data_workers,
         drop_last=True
     )
-    if device_debug:
-        # Peek one batch from train loader and see device placement pre/post processing
-        try:
-            first_batch = next(iter(train_loader))
-            print_batch_device_report(first_batch, header="Raw batch from DataLoader (before model processing)")
-            # Many algos convert inside process/postprocess. Use the algo hooks if present.
-            processed = model.process_batch_for_training(first_batch)
-            if hasattr(model, 'postprocess_batch_for_training'):
-                processed = model.postprocess_batch_for_training(processed, obs_normalization_stats=None)
-            print_batch_device_report(processed, header="Batch after model processing")
-            mismatches = assert_batch_on_device(processed, device)
-            if mismatches:
-                print("\n[Device Debug] Tensors not on target device:")
-                for path, dev in mismatches[:50]:
-                    print(f"- {path}: {dev}")
-                if len(mismatches) > 50:
-                    print(f"  … (+{len(mismatches)-50} more)")
-        except StopIteration:
-            pass
 
     if config.experiment.validate:
         # cap num workers for validation dataset at 1
@@ -379,7 +352,7 @@ def main(args):
     # catch error during training and print it
     res_str = "finished run successfully!"
     try:
-        train(config, device=device, device_debug=args.device_debug)
+        train(config, device=device)
     except Exception as e:
         res_str = "run failed with error:\n{}\n\n{}".format(e, traceback.format_exc())
     print(res_str)
@@ -439,12 +412,6 @@ if __name__ == "__main__":
         "--debug",
         action='store_true',
         help="set this flag to run a quick training run for debugging purposes"
-    )
-
-    parser.add_argument(
-        "--device_debug",
-        action='store_true',
-        help="print where model params and batch tensors live (CPU vs CUDA) before training"
     )
 
     args = parser.parse_args()

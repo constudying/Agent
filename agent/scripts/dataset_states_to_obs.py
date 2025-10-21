@@ -109,6 +109,7 @@ def extract_trajectory(
         #       the reward for the current timestep
         r = env.get_reward()
 
+
         # infer done signal
         done = False
         if (done_mode == 1) or (done_mode == 2):
@@ -129,10 +130,17 @@ def extract_trajectory(
         obs = deepcopy(next_obs)
 
     # convert list of dict to dict of list for obs dictionaries (for convenient writes to hdf5 dataset)
+    # 将列表的字典转换为字典的列表，优化hdf5存储，其更适合存储字典的列表格式，即同类型数据的数组
+    # 同时每个key对应的数据类型也更统一，支持高效压缩和读取
     traj["obs"] = TensorUtils.list_of_flat_dict_to_dict_of_list(traj["obs"])
     traj["next_obs"] = TensorUtils.list_of_flat_dict_to_dict_of_list(traj["next_obs"])
 
     # list to numpy array
+    # numpy数组操作速度更快，列表操作慢
+    # numpy存储效率比python列表更高
+    # 许多ML框架需要Numpy数组作为输入
+    # numpy还能提供丰富的数值计算功能
+    # gotcha在于其会修改原始字典的值
     for k in traj:
         if k == "initial_state_dict":
             continue
@@ -166,7 +174,7 @@ def dataset_states_to_obs(args):
     # list of all demonstration episodes (sorted in increasing number order)
     f = h5py.File(args.dataset, "r")
     demos = list(f["data"].keys())
-    inds = np.argsort([int(elem[5:]) for elem in demos])
+    inds = np.argsort([int(elem[5:]) for elem in demos]) # np.argsort返回的是排序后的索引值序号（排序大小）
     demos = [demos[i] for i in inds]
 
     # maybe reduce the number of demonstrations to playback
@@ -185,10 +193,11 @@ def dataset_states_to_obs(args):
         ep = demos[ind]
 
         # prepare initial state to reload from
+        # [()]是hdf5文件中推荐使用读取全部数据的方式，表示读取整个数据集，一般列表使用[:]读取整个数组
         states = f["data/{}/states".format(ep)][()]
         initial_state = dict(states=states[0])
         if is_robosuite_env:
-            initial_state["model"] = f["data/{}".format(ep)].attrs["model_file"]
+            initial_state["model"] = f["data/{}".format(ep)].attrs["model_file"] # attr读取的是hdf5中group的描述信息，即属性。读取文件内容时可用字典访问方式
 
         # extract obs, rewards, dones
         actions = f["data/{}/actions".format(ep)][()]
@@ -245,9 +254,21 @@ def dataset_states_to_obs(args):
 
     f.close()
     f_out.close()
+    
+    # TODO：源代码只关闭了输出文件，并没有关闭环境，导致终端报EGL cleanup错误。但是只是警告，并不影响功能，有待后续优化
 
-
+"""
+面向离线数据集或轨迹重建：
+    1. 人类演示数据：其中可能没有明确的奖励信号
+    2. 仿真器版本更新：奖励函数可能发生变化
+    3. 多任务学习：使用不同的奖励函数评估同一轨迹
+    4. 因此，重新计算奖励信号可以确保一致性和准确性
+当然，如果用户希望保留原始奖励信号，可以使用 --copy_rewards 选项
+> --copy_dones 选项的理由类似
+"""
 if __name__ == "__main__":
+
+    
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--dataset",

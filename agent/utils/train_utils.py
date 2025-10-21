@@ -20,12 +20,12 @@ import robomimic.utils.tensor_utils as TensorUtils
 import robomimic.utils.log_utils as LogUtils
 import robomimic.utils.file_utils as FileUtils
 
-from mimicplay.utils.dataset import PlaydataSequenceDataset
+from agent.utils.dataset import PlaydataSequenceDataset
 from robomimic.envs.env_base import EnvBase
 from robomimic.envs.wrappers import EnvWrapper
 
-import mimicplay
-from mimicplay.algo import RolloutPolicy
+import agent
+from agent.algo import RolloutPolicy
 
 def get_exp_dir(config, auto_remove_exp_dir=False):
     """
@@ -52,8 +52,8 @@ def get_exp_dir(config, auto_remove_exp_dir=False):
     # create directory for where to dump model parameters, tensorboard logs, and videos
     base_output_dir = os.path.expanduser(config.train.output_dir)
     if not os.path.isabs(base_output_dir):
-        # relative paths are specified relative to robomimic module location
-        base_output_dir = os.path.join(mimicplay.__path__[0], base_output_dir)
+        # relative paths are specified relative to agent module location
+        base_output_dir = os.path.join(agent.__path__[0], base_output_dir)
     base_output_dir = os.path.join(base_output_dir, config.experiment.name)
     if os.path.exists(base_output_dir):
         if not auto_remove_exp_dir:

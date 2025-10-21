@@ -9,9 +9,10 @@ import torch.nn as nn
 import torch.nn.functional as F  # 导入神经网络函数库，常用于激活函数、损失函数等
 from torch import nn, Tensor  # 直接导入神经网络模块和张量类
 
-from robomimic.models.base_nets import Module, MLP, ConvBase
+import robomimic.utils.torch_utils as TorchUtils
+import robomimic.models.obs_core as ObsCore
 from robomimic.models.obs_nets import Randomizer
-
+from robomimic.models.base_nets import Module, MLP
 
 def get_activation(activation: str):
     if activation == "relu":
@@ -58,7 +59,6 @@ def transformer_args_from_config(transformer_config):
         transformer_output_dropout=transformer_config.output_dropout,
         transformer_sinusoidal_embedding=transformer_config.sinusoidal_embedding,
         transformer_activation=transformer_config.activation,
-        transformer_nn_parameter_for_timesteps=transformer_config.nn_parameter_for_timesteps,
         transformer_causal=transformer_config.causal,
         transformer_nn_parameter_for_timesteps=transformer_config.nn_parameter_for_timesteps,
         transformer_ffw_dim=transformer_config.ffwn_dim,
@@ -94,6 +94,43 @@ def build_film_core(net_class, **net_kwargs):
                 raise ValueError("net_class must be one of 'mlp', 'lstm', 'gru', 'transformer' or a subclass of FiLMCoreBase")
 
 
+"""
+================================================
+Visual Backbone Networks
+================================================
+"""
+class ConvBase(Module):
+    """
+    Base class for ConvNets.
+    """
+    def __init__(self):
+        super(ConvBase, self).__init__()
+
+    # dirty hack - re-implement to pass the buck onto subclasses from ABC parent
+    def output_shape(self, input_shape):
+        """
+        Function to compute output shape from inputs to this module. 
+
+        Args:
+            input_shape (iterable of int): shape of input. Does not include batch dimension.
+                Some modules may not need this argument, if their output does not depend 
+                on the size of the input, or if they assume fixed size input.
+
+        Returns:
+            out_shape ([int]): list of integers corresponding to output shape
+        """
+        raise NotImplementedError
+
+    def forward(self, inputs):
+        # x.shape: torch.Size([32, 1, 3, 84, 84])
+        x = self.nets(inputs)
+        if list(self.output_shape(list(inputs.shape)[1:])) != list(x.shape)[1:]:
+            raise ValueError('Size mismatch: expect size %s, but got size %s' % (
+                str(self.output_shape(list(inputs.shape)[1:])), str(list(x.shape)[1:]))
+            )
+        return x
+
+
 class FiLMCoreBase(Module):
     """
     线性仿射单元核心
@@ -121,7 +158,6 @@ class FiLMMLP(FiLMCoreBase):
         super(FiLMCoreBase, self).__init__()
 
         # 参数类型检查
-        assert isinstance(obs_shapes, int), "obs_shapes must be a dict"
         assert isinstance(layer_dims, (list, tuple)), "hidden_dims must be list or tuple"
         assert all(isinstance(h, int) and h > 0 for h in layer_dims), "hidden_dims must be list of positive ints"
         assert activation in ["relu", "tanh", "sigmoid", "leaky_relu"], "activation must be one of 'relu', 'tanh', 'sigmoid', 'leaky_relu'"
@@ -131,8 +167,8 @@ class FiLMMLP(FiLMCoreBase):
             output_dim=layer_dims[-1],
             layer_dims=layer_dims[:-1],
             layer_func=layer_func,
-            activation=activation,
-            output_activation=activation, # make sure non-linearity is applied before decoder
+            activation=get_activation(activation),
+            output_activation=get_activation(activation), # make sure non-linearity is applied before decoder
         )
 
     def output_shape(self):
@@ -179,21 +215,7 @@ class FiLMTransformer(FiLMCoreBase):
 #         以下是残差块以及网络的相关实现
 #
 ###############################################
-class ResidualBlockBase(ConvBase):
-    """
-    定义残差块的基础类，用于确定引入FiLM的残差块结构
-    """
-    def __init__(self):
-        super(ResidualBlockBase, self).__init__()
-
-    def output_shape(self, input_shape):
-        raise NotImplementedError
-    
-    def forward(self, x, *args):
-        raise NotImplementedError
-
-
-class ResidualBlock(ResidualBlockBase):
+class ResidualBlock(ConvBase):
     def __init__(
         self,
         conv1_params: dict=None,
@@ -209,44 +231,51 @@ class ResidualBlock(ResidualBlockBase):
         # 参数检查
         assert isinstance(conv1_params, dict), "conv1_params must be a dict"
         assert isinstance(conv2_params, dict), "conv2_params must be a dict"
-        assert isinstance(shortcut_params, (dict, type(None))), "shortcut_params must be a dict or None"
+        assert isinstance(shortcut_params, dict), "shortcut_params must be a dict"
         
         if conv1_params is None:
             conv1_params = dict(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1)
         if conv2_params is None:
             conv2_params = dict(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1)
         # 创建卷积层
-        self.conv1 = nn.Conv2d(**conv1_params)
-        self.conv2 = nn.Conv2d(**conv2_params)
-        if shortcut_params is not None:
-            self.shortcut = nn.Conv2d(**shortcut_params)
-        else:
-            self.shortcut = nn.Identity()
-        self.activation = activation()
+        self.convnet = nn.ModuleList([
+            nn.Conv2d(**conv1_params),
+            nn.Conv2d(**conv2_params),
+            nn.Conv2d(**shortcut_params)
+        ])
+        self.activation1 = activation()
+        self.activation2 = activation()
 
-    def forward(self, x, *args):
-        film_params = args[0] if len(args) > 0 else None
-        identity = self.shortcut(x)
-        out = self.conv1(x)
-        out = self.activation(out)
-        out = self.conv2(out)
-        if film_params is not None:
-            gamma, beta = film_params[0], film_params[1]
-            # 假设 gamma, beta 都是Tensor，可以广播到 out 的 shape
+    def forward(self, x, film_args=None):
+        # 处理 FiLM 参数
+        # args 可以是 None（初始化时）或包含 FiLM 参数的列表/元组
+        # x.shape: torch.Size([1, 3, 84, 84])
+        out = self.convnet[0](x)
+        out = self.activation1(out)
+        out = self.convnet[1](out)
+        
+        if film_args is not None:
+            # film_params 形状: [batch, 2]，包含 gamma 和 beta
+            # out 形状: [batch, channels, height, width]
+            gamma = film_args[0]  # [batch]
+            beta = film_args[1]   # [batch]
+            # 将 gamma 和 beta 扩展为 [batch, 1, 1, 1] 以便广播
+            # FiLM 操作: out = gamma * out + beta
             out = gamma * out + beta
+        identity = self.convnet[2](x)
         out += identity
-        out = self.activation(out)
+        out = self.activation2(out)
         return out
     
-    def output_shape(self, input_shape):
+    def output_shape(self, input_shape=None):
         # 计算输出形状
         with torch.no_grad():
-            dummy_input = torch.zeros(1, *input_shape)
+            dummy_input = torch.zeros(1, *tuple(input_shape))
             dummy_output = self.forward(dummy_input)
         return list(dummy_output.shape)[1:]
     
 
-class ResNetFiLM(ConvBase):
+class ResNetFiLM(ObsCore.EncoderCore, ConvBase):
     """
     引入FiLM模块的残差网络
     """
@@ -268,6 +297,7 @@ class ResNetFiLM(ConvBase):
         film_net_kwargs["layer_func"] = get_activation(film_net_kwargs["layer_func"])
 
         self.resnet = nn.ModuleDict()
+        self.block_nums = conv_layer_num
         for k, v in net_params.items():
             self.resnet[k] = ResidualBlock(
                 conv1_params=v["conv1_params"],
@@ -275,17 +305,24 @@ class ResNetFiLM(ConvBase):
                 shortcut_params=net_params[k].get("shortcut_params", None),
                 activation=activation
             )
-        self.resnet["block1"].conv1.in_channels = input_channels  # 设置第一个残差块的输入通道数
 
-        self.film = build_film_core(film_net_class, **film_net_kwargs)
-        self.film_dict = [net_params[k]["film_enable"] for k in net_params.keys()]
+        self._film_locked = False
+        self.resnet["film"] = build_film_core(film_net_class, **film_net_kwargs)
+        self.film_dict = [net_params[k]["film_enabled"] for k in net_params.keys()]
 
     def forward(self, x):
-        if self.film is not None:
-            film_out = self.film(x)
-        for i in range(len(self.resnet)):
+        # x.shape: torch.Size([32, 1, 3, 84, 84])
+        device = x.device # 从输入 x 获取设备，确保与模型参数一致
+        if len(x.shape) == 5:
+            # 合并 batch 和时间维度
+            b, t = x.shape[0], x.shape[1]
+            x = x.view(b * t, *x.shape[2:])  # 变为 [batch * time, channels, height, width]
+        film_input = torch.zeros(512, device=device)  # 假设 FiLM 网络的输入是一个固定的零向量
+        film_out = self.resnet["film"](film_input)  # 输出: [blocks, 2]
+        for i in range(0, self.block_nums):  # 通过各个残差块
             if self.film_dict[i] is True:
-                x = self.resnet[f"block{i+1}"](x, film_out[i,:])
+                # 传递整个 film_out 给残差块，让它处理 batch 维度
+                x = self.resnet[f"block{i+1}"](x, film_out)
             elif self.film_dict[i] is False:
                 x = self.resnet[f"block{i+1}"](x)
             else:
@@ -293,8 +330,11 @@ class ResNetFiLM(ConvBase):
         return x
     
     def output_shape(self, input_shape):
-        return self.resnet[f"block{len(self.resnet)}"].output_shape(input_shape)
-    
+        x = copy.deepcopy(input_shape)
+        for idx in range(1, self.block_nums+1):
+            x = self.resnet[f"block{idx}"].output_shape(x)
+        return x
+
     def _to_string(self):
         """
         Subclasses should override this method to print out info about network / policy.
@@ -306,12 +346,11 @@ class ResNetFiLM(ConvBase):
         header = '{}'.format(str(self.__class__.__name__))
         msg = ''
         indent = ' ' * 4
-        for i in range(len(self.resnet)):
-            msg += textwrap.indent(f"\nblock{i+1}: film={self.film_dict[i]}\n", indent)
-            msg += textwrap.indent(f"{self.resnet[f'block{i+1}']}\n", indent)
+        for k in self.resnet.keys():
+            msg += textwrap.indent(f"{self.resnet[k]}\n", indent)
             msg += textwrap.indent("\n" + self._to_string() + "\n", indent)
             msg += textwrap.indent(")", ' ' * 4)
-        msg += textwrap.indent("\noutput_shape={}".format(self.output_shape()), ' ' * 4)
+        msg += textwrap.indent(f"\nfilm_dict: {self.film_dict}\n", indent)
         msg = header + '(' + msg + '\n)'
         return msg
 
