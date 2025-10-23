@@ -52,7 +52,7 @@
     "goal_mode": "nstep",
     "cuda": true,
     "batch_size": 32,
-    "num_epochs": 50,
+    "num_epochs": 500,
     "seed": 1
   },
   "algo": {
@@ -97,7 +97,7 @@
       "latent_plan_dim": 400
     },
     "lowlevel": {
-      "enabled": false,
+      "enabled": true,
       "feat_dim": 656,
       "trained_highlevel_planner": "",
       "eval_goal_img_window": 30,

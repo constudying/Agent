@@ -1,4 +1,5 @@
 
+
 import textwrap
 import copy
 from typing import Optional, List
@@ -123,11 +124,20 @@ class ConvBase(Module):
 
     def forward(self, inputs):
         # x.shape: torch.Size([32, 1, 3, 84, 84])
+        # 对于nn.Sequential模块，不存在显式forward方法，因此直接调用此处forward方法后启用自身Sequential的底层forward方法
+        # 因此针对Sequential模块的输出形状检查在此处进行
+        had_seq = False
+        if inputs.dim() == 5:
+            bs, seq, _, _, _ = inputs.shape
+            inputs = inputs.view(bs * seq, *inputs.shape[2:])  # 合并 batch 和 sequence 维度
+            had_seq = True
         x = self.nets(inputs)
         if list(self.output_shape(list(inputs.shape)[1:])) != list(x.shape)[1:]:
             raise ValueError('Size mismatch: expect size %s, but got size %s' % (
                 str(self.output_shape(list(inputs.shape)[1:])), str(list(x.shape)[1:]))
             )
+        if had_seq:
+            x = x.view(bs, seq, *x.shape[1:])  # 恢复 batch 和 sequence 维度
         return x
 
 
@@ -313,12 +323,13 @@ class ResNetFiLM(ObsCore.EncoderCore, ConvBase):
     def forward(self, x):
         # x.shape: torch.Size([32, 1, 3, 84, 84])
         device = x.device # 从输入 x 获取设备，确保与模型参数一致
-        if len(x.shape) == 5:
-            # 合并 batch 和时间维度
-            b, t = x.shape[0], x.shape[1]
-            x = x.view(b * t, *x.shape[2:])  # 变为 [batch * time, channels, height, width]
         film_input = torch.zeros(512, device=device)  # 假设 FiLM 网络的输入是一个固定的零向量
         film_out = self.resnet["film"](film_input)  # 输出: [blocks, 2]
+        had_seq = False
+        if x.dim() == 5:
+            bs, seq, _, _, _ = x.shape
+            x = x.view(bs * seq, *x.shape[2:])  # 合并 batch 和 sequence 维度
+            had_seq = True
         for i in range(0, self.block_nums):  # 通过各个残差块
             if self.film_dict[i] is True:
                 # 传递整个 film_out 给残差块，让它处理 batch 维度
@@ -327,6 +338,8 @@ class ResNetFiLM(ObsCore.EncoderCore, ConvBase):
                 x = self.resnet[f"block{i+1}"](x)
             else:
                 raise ValueError("film_dict values must be True or False")
+        if had_seq:
+            x = x.view(bs, seq, *x.shape[1:])  # 恢复 batch 和 sequence 维度，不使用提取的c、h、w，因为x的shape已经更新
         return x
     
     def output_shape(self, input_shape):
@@ -353,7 +366,3 @@ class ResNetFiLM(ObsCore.EncoderCore, ConvBase):
         msg += textwrap.indent(f"\nfilm_dict: {self.film_dict}\n", indent)
         msg = header + '(' + msg + '\n)'
         return msg
-
-
-
-

@@ -474,6 +474,7 @@ class RolloutPolicy(object):
                 and np.array values for each key)
             goal (dict): goal observation
         """
+        
         ob = self._prepare_observation(ob)
         if goal is not None:
             goal = self._prepare_observation(goal)

@@ -12,6 +12,7 @@ from robomimic.utils.python_utils import extract_class_init_kwargs_from_dict
 
 from agent.models.base_nets import *
 from robomimic.models.obs_core import EncoderCore
+from robomimic.models.base_nets import ConvBase, ResNet18Conv
 
 class AgentVisualCore(EncoderCore, BaseNets.ConvBase):
     """
@@ -46,7 +47,7 @@ class AgentVisualCore(EncoderCore, BaseNets.ConvBase):
             "VisualCore: @backbone_class must be a string representing the backbone class name"
         self.backbone = eval(backbone_class)(**backbone_kwargs)
 
-        assert isinstance(self.backbone, BaseNets.ConvBase), \
+        assert isinstance(self.backbone, BaseNets.ConvBase) or isinstance(self.backbone, ConvBase), \
             "VisualCore: @backbone must be instance of ConvBase class"
         
         feat_shape = self.backbone.output_shape(input_shape)

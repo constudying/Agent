@@ -48,12 +48,12 @@ class MlpActorNetwork(RESNET_MIMO_MLP):
     
     def output_shape(self, input_shape):
         return [self.ac_dim]
-    
-    def forward_train(self, obs_dict, goal_dict=None):
-        return super(MlpActorNetwork, self).forward(obs=obs_dict, goal=goal_dict)
+
+    def forward_train(self, obs_dict, goal_dict=None, return_latent=False):
+        return super(MlpActorNetwork, self).forward(obs=obs_dict, goal=goal_dict, return_latent=return_latent)
     
     def forward(self, obs_dict, goal_dict=None):
-        actions = super(MlpActorNetwork, self).forward(obs=obs_dict, goal=goal_dict)["action"]
+        actions = super(MlpActorNetwork, self).forward(obs=obs_dict, goal=goal_dict)
         return actions
     
     def _to_string(self):
@@ -159,7 +159,7 @@ class TransformerActorNetwork(RESNET_MIMO_Transformer):
             transformer_num_layers=transformer_num_layers,
             transformer_num_heads=transformer_num_heads,
             transformer_attn_dropout=transformer_attn_dropout,
-            transformer__output_dropout=transformer_output_dropout,
+            transformer_output_dropout=transformer_output_dropout,
             transformer_sinusoidal_embedding=transformer_sinusoidal_embedding,
             transformer_activation=transformer_activation,
             transformer_nn_parameter_for_timesteps=transformer_nn_parameter_for_timesteps,
@@ -185,6 +185,19 @@ class TransformerActorNetwork(RESNET_MIMO_Transformer):
                 msg="TransformerActorNetwork: input_shape inconsistent in temporal dimension")
         return [T, self.ac_dim]
 
+    def forward_train(self, obs_dict, goal_dict=None):
+
+        if self._is_goal_conditioned:
+            assert goal_dict is not None
+            # repeat the goal observation in time to match dimension with obs_dict
+            mod = list(obs_dict.keys())[0]
+            goal_dict = TensorUtils.unsqueeze_expand_at(goal_dict, size=obs_dict[mod].shape[1], dim=1)
+
+        forward_kwargs = dict(obs=obs_dict, goal=goal_dict)
+        outputs = super(TransformerActorNetwork, self).forward(**forward_kwargs)
+
+        return outputs
+
     def forward(self, obs_dict, actions=None, goal_dict=None):
         """
         Forward a sequence of inputs through the Transformer.
@@ -207,6 +220,11 @@ class TransformerActorNetwork(RESNET_MIMO_Transformer):
         outputs = super(TransformerActorNetwork, self).forward(**forward_kwargs)
 
         return outputs["action"]
+    
+    def forward_step(self, obs):
+        forward_kwargs = dict(obs=obs)
+        outputs = super(TransformerActorNetwork, self).forward(**forward_kwargs)
+        return outputs
 
     def _to_string(self):
         """Info to pretty print."""

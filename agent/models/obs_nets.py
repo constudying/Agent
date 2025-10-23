@@ -16,7 +16,7 @@ from robomimic.models.base_nets import Module, MLP
 from agent.models.obs_core import AgentVisualCore
 from robomimic.models.obs_core import Randomizer
 from agent.models.transformer import PositionEncoder, TransformerBackbone
-
+from agent.models.base_nets import get_activation
 
 def obs_encoder_factory(
         obs_shapes,
@@ -225,6 +225,10 @@ class ObservationEncoder(Module):
             if self.obs_nets[k] is not None:
                 # 这里会调用不同的编码器网络，编码不同模态
                 # agentview_image输入形状： 32*1*3*84*84
+                # if len(x.shape) == 5:
+                #     bs, seq, c, h, w = x.shape
+                #     x = x.view(bs * seq, c, h, w)
+                # 暂时不在此处处理时序维度，交给各个编码器网络自己处理，避免重复代码，保持高层代码接口统一
                 x = self.obs_nets[k](x)
                 if self.activation is not None:
                     x = self.activation(x)
@@ -421,15 +425,12 @@ class ObservationGroupEncoder(Module):
         Returns:
             outputs (torch.Tensor): flat outputs of shape [B, D]
         """
-
         # ensure all observation groups we need are present
         assert set(self.observation_group_shapes.keys()).issubset(inputs), "{} does not contain all observation groups {}".format(
             list(inputs.keys()), list(self.observation_group_shapes.keys())
         )
         outputs = []
         # Deterministic order since self.observation_group_shapes is OrderedDict
-        import ipdb
-        ipdb.set_trace()
         for obs_group in self.observation_group_shapes:
             # pass through encoder
             outputs.append(
@@ -564,7 +565,6 @@ class RESNET_MIMO_MLP(Module):
         self.output_dim = output_shapes
 
         self.nets = nn.ModuleDict()
-
         self.nets["image_processor"] = ObservationGroupEncoder(
             observation_group_shapes=input_obs_group_shapes,
             feature_activation=None,
@@ -586,14 +586,13 @@ class RESNET_MIMO_MLP(Module):
         return { k : list(self.output_shapes[k]) for k in self.output_shapes }
     
     def forward(self, return_latent=False, **inputs):
+        
         enc_outputs = self.nets["image_processor"].forward(**inputs)
         mlp_outputs = self.nets["mlp"].forward(enc_outputs)
-        outputs_dict = {
-            "action": mlp_outputs
-        }
+
         if return_latent:
-            return outputs_dict, enc_outputs
-        return outputs_dict
+            return mlp_outputs, enc_outputs
+        return mlp_outputs
     
     def _to_string(self):
         """
@@ -632,16 +631,16 @@ class RESNET_MIMO_Transformer(Module):
         transformer_activation=None,
         transformer_nn_parameter_for_timesteps=None,
         transformer_causal=None,
-        **encoder_kwargs,
+        encoder_kwargs=None, # NOTE: 不能使用可扩展关键字参数传递，其会将传入参数打包成字典，键为encoder_kwargs，值为传入的参数值，导致无法正确解析
     ):
         super(RESNET_MIMO_Transformer, self).__init__()
 
         self.input_obs_group_shapes = input_obs_group_shapes
+        del self.input_obs_group_shapes['goal']  # 删除goal输入，底层网络不需要goal输入
         self.output_dim = output_shapes
 
         self.nets = nn.ModuleDict()
         self.params = nn.ParameterDict()
-
         self.nets["image_processor"] = ObservationGroupEncoder(
             observation_group_shapes=input_obs_group_shapes,
             feature_activation=None,
@@ -684,6 +683,13 @@ class RESNET_MIMO_Transformer(Module):
             activation=transformer_activation,
         )
 
+        self.nets["mlp_decoder"] = MLP(
+            input_dim=transformer_embed_dim,
+            output_dim=output_shapes['action'][0],
+            layer_dims=[256, 128],
+            output_activation=get_activation(transformer_activation),
+        )
+
         self.transformer_context_length = transformer_context_length
         self.transformer_embed_dim = transformer_embed_dim
         self.transformer_sinusoidal_embedding = transformer_sinusoidal_embedding
@@ -696,10 +702,11 @@ class RESNET_MIMO_Transformer(Module):
         enc_outputs = self.nets["image_processor"].forward(**inputs)
         trans_enc_outputs = self.nets["transformer_encoder"].forward(enc_outputs)
         trans_dec_outputs = self.nets["transformer_decoder"].forward(trans_enc_outputs)
+        mlp_dec_outputs = self.nets["mlp_decoder"].forward(trans_dec_outputs)
         if return_latent:
-            return trans_dec_outputs, enc_outputs
-        return trans_dec_outputs
-    
+            return mlp_dec_outputs, enc_outputs
+        return mlp_dec_outputs
+
     def _to_string(self):
         """
         Subclasses should override this method to print out info about network / policy.

@@ -71,7 +71,7 @@ class NormalSelfAttention(nn.Module):
         D is input dimension (@self.embed_dim).
         """
         assert x.dim() == 3, "Input x must be 3D (B, T, D)"
-        B, T, D = x.shape()
+        B, T, D = x.shape
         assert (
             T <= self.context_length
         ), "self-attention module can only handle sequences up to {} in length but got length {}".format(
@@ -257,7 +257,7 @@ class NormalTransformerBlock(Module):
         self.output_dropout = output_dropout
         self.ffw_hidden_dim = ffw_hidden_dim if ffw_hidden_dim is not None else 4 * embed_dim
         self.ffw_dropout = ffw_dropout if ffw_dropout is not None else output_dropout
-        self.activation = activation()
+        self.activation = activation
         self.nets = nn.ModuleDict()
 
         self.nets["attention"] = NormalSelfAttention(
@@ -371,8 +371,10 @@ class TransformerBackbone(Module):
         self.output_dropout = output_dropout
         self.ffw_hidden_dim = ffw_hidden_dim if ffw_hidden_dim is not None else 4 * embed_dim
         self.ffw_dropout = ffw_dropout if ffw_dropout is not None else output_dropout
-        self.activation = activation()
+        self.activation = get_activation(activation)()
         self.causal = causal
+
+        self._create_networks()
 
     def _create_networks(self):
         self.nets = nn.ModuleDict()
@@ -409,6 +411,10 @@ class TransformerBackbone(Module):
             module.weight.data.fill_(1.0)
 
     def forward(self, inputs):
+        # TODO: 这里的context_length设定比较迷，图像存在时序维度，但是作为混合输入时，context_length能够单单描述图像的时序长度吗？
+        if inputs.dim() == 2:
+          inputs = inputs.unsqueeze(1)  # 添加 batch 维度，变为 (batch, context_length, embed_dim)
+
         assert inputs.shape[1:] == (self.context_length, self.embed_dim), \
             "the inputs of transformerbackbone dismatch the setting of programmer, which is not {}".format(inputs.shape)
         x = self.nets["transformer"](inputs)

@@ -108,7 +108,8 @@ def rollout(policy, env, horizon, render=False, video_writer=None, video_skip=5,
 
             # get action from policy
             act = policy(ob=obs)
-
+            act = act.squeeze()  # in case action has a singleton batch dimension
+            print(act,"\n")
             # play action
             next_obs, r, done, _ = env.step(act)
 
@@ -259,8 +260,9 @@ def run_trained_agent(args):
     rollout_stats = TensorUtils.list_of_flat_dict_to_dict_of_list(rollout_stats)
     avg_rollout_stats = { k : np.mean(rollout_stats[k]) for k in rollout_stats }
     avg_rollout_stats["Num_Success"] = np.sum(rollout_stats["Success_Rate"])
-    with open('{}_results.json'.format(args.video_path.split('.')[0]), 'w') as json_file:
-        json.dump(avg_rollout_stats, json_file, indent=4)
+    if args.video_path is not None:
+      with open('{}_results.json'.format(args.video_path.split('.')[0]), 'w') as json_file:
+          json.dump(avg_rollout_stats, json_file, indent=4)
     print("Average Rollout Stats")
     print(json.dumps(avg_rollout_stats, indent=4))
 
@@ -290,7 +292,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n_rollouts",
         type=int,
-        default=100,
+        default=1, # TODO: change back to 100
         help="number of rollouts",
     )
 
@@ -298,7 +300,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--horizon",
         type=int,
-        default=2000,
+        default=1000,
         help="(optional) override maximum horizon of rollout from the one in the checkpoint",
     )
 

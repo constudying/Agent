@@ -27,15 +27,15 @@
     "rollout": {
       "enabled": false,
       "n": 10,
-      "horizon": 1600,
-      "rate": 10,
+      "horizon": 10,
+      "rate": 50,
       "warmstart": 0,
       "terminate_on_success": true
     }
   },
   "train": {
     "data": null,
-    "output_dir": "../trained_models_highlevel",
+    "output_dir": "../trained_models_lowevel",
     "num_data_workers": 2,
     "hdf5_cache_mode": "low_dim",
     "hdf5_use_swmr": true,
@@ -52,7 +52,7 @@
     "goal_mode": "nstep",
     "cuda": true,
     "batch_size": 32,
-    "num_epochs": 500,
+    "num_epochs": 10,
     "seed": 1
   },
   "algo": {
@@ -75,128 +75,31 @@
     },
     "actor_layer_dims": [
       400,
-      400
+      128,
+      7
     ],
-    "resnet": {
-      "enabled": true,
-      "input_channels": 3,
-      "film_net_class": "mlp",
-      "film_net_kwargs": {
-        "obs_shapes": 512,
-        "layer_dims": [
-          256,
-          128,
-          64
-        ],
-        "layer_func": "linear",
-        "activation": "relu"
-      },
-      "conv_layer_num": 4,
-      "net_params": {
-        "block1": {
-          "conv1_params": {
-            "in_channels": 3,
-            "out_channels": 32,
-            "kernel_size": 4,
-            "stride": 1,
-            "padding": 1
-          },
-          "conv2_params": {
-            "in_channels": 32,
-            "out_channels": 64,
-            "kernel_size": 4,
-            "stride": 1,
-            "padding": 1
-          },
-          "shortcut_params": null,
-          "film_enabled": true
-        },
-        "block2": {
-          "conv1_params": {
-            "in_channels": 64,
-            "out_channels": 128,
-            "kernel_size": 4,
-            "stride": 1,
-            "padding": 1
-          },
-          "conv2_params": {
-            "in_channels": 128,
-            "out_channels": 64,
-            "kernel_size": 4,
-            "stride": 1,
-            "padding": 1
-          },
-          "shortcut_params": null,
-          "film_enabled": true
-        },
-        "block3": {
-          "conv1_params": {
-            "in_channels": 64,
-            "out_channels": 32,
-            "kernel_size": 4,
-            "stride": 1,
-            "padding": 1
-          },
-          "conv2_params": {
-            "in_channels": 32,
-            "out_channels": 16,
-            "kernel_size": 4,
-            "stride": 1,
-            "padding": 1
-          },
-          "shortcut_params": null,
-          "film_enabled": true
-        },
-        "block4": {
-          "conv1_params": {
-            "out_channels": 256,
-            "kernel_size": 3,
-            "stride": 1,
-            "padding": 1
-          },
-          "conv2_params": {
-            "out_channels": 256,
-            "kernel_size": 3,
-            "stride": 1,
-            "padding": 1
-          },
-          "shortcut_params": null,
-          "film_enabled": true
-        }
-      },
-      "activation": "relu",
-      "input_coord_conv": false
-    },
     "transformer": {
       "enabled": true,
-      "embed_dim": null,
-      "num_layers": null,
-      "num_heads": null,
-      "context_length": null,
-      "att_dropout": 0.1,
+      "embed_dim": 204,
+      "num_layers": 4,
+      "num_heads": 4,
+      "context_length": 1,
+      "attn_dropout": 0.1,
       "output_dropout": 0.1,
       "transformer_sinusoidal_embedding": false,
+      "activation": "relu",
       "causal": false,
-      "transformer_nn_parameter_for_timestep": false
+      "transformer_nn_parameter_for_timesteps": false
     },
     "highlevel": {
-      "enabled": true,
+      "enabled": false,
       "ac_dim": 30,
       "latent_plan_dim": 400
     },
     "lowlevel": {
-      "enabled": false,
+      "enabled": true,
       "feat_dim": 656,
-      "n_layer": 4,
-      "n_head": 4,
-      "block_size": 10,
-      "gmm_modes": 5,
-      "action_dim": 7,
-      "proprio_dim": 7,
-      "spatial_softmax_num_kp": 64,
-      "gmm_min_std": 0.0001,
-      "dropout": 0.1,
-      "trained_highlevel_planner": "",
+      "trained_highlevel_planner": "/home/lsy/cjh/project1/Agent/agent/../trained_models_highlevel/test/20251022193318/models/model_epoch_50.pth",
       "eval_goal_img_window": 30,
       "eval_max_goal_img_iter": 5
     },
@@ -214,7 +117,8 @@
       "obs": {
         "low_dim": [
           "robot0_eef_pos",
-          "robot0_eef_pos_future_traj"
+          "robot0_eef_quat",
+          "robot0_gripper_qpos"
         ],
         "rgb": [
           "agentview_image",
@@ -240,34 +144,7 @@
         "obs_randomizer_kwargs": {}
       },
       "rgb": {
-        "core_class": "VisualCore",
-        "core_kwargs": {
-          "feature_dimension": 64,
-          "flatten": true,
-          "backbone_class": "ResNetFiLM",
-          "backbone_kwargs": {
-            "pretrained": false,
-            "input_coord_conv": false
-          },
-          "pool_class": null,
-          "pool_kwargs": {
-            "num_kp": 32,
-            "learnable_temperature": false,
-            "temperature": 1.0,
-            "noise_std": 0.0,
-            "output_variance": false
-          }
-        },
-        "obs_randomizer_class": "CropRandomizer",
-        "obs_randomizer_kwargs": {
-          "crop_height": 76,
-          "crop_width": 76,
-          "num_crops": 1,
-          "pos_enc": false
-        }
-      },
-      "depth": {
-        "core_class": "VisualCore",
+        "core_class": "AgentVisualCore",
         "core_kwargs": {
           "feature_dimension": 64,
           "flatten": true,
@@ -286,52 +163,19 @@
           }
         },
         "obs_randomizer_class": null,
-        "obs_randomizer_kwargs": {
-          "crop_height": 76,
-          "crop_width": 76,
-          "num_crops": 1,
-          "pos_enc": false
-        }
+        "obs_randomizer_kwargs": {}
+      },
+      "depth": {
+        "core_class": null,
+        "core_kwargs": {},
+        "obs_randomizer_class": null,
+        "obs_randomizer_kwargs": {}
       },
       "scan": {
-        "core_class": "ScanCore",
-        "core_kwargs": {
-          "feature_dimension": 64,
-          "flatten": true,
-          "pool_class": "SpatialSoftmax",
-          "pool_kwargs": {
-            "num_kp": 32,
-            "learnable_temperature": false,
-            "temperature": 1.0,
-            "noise_std": 0.0,
-            "output_variance": false
-          },
-          "conv_activation": "relu",
-          "conv_kwargs": {
-            "out_channels": [
-              32,
-              64,
-              64
-            ],
-            "kernel_size": [
-              8,
-              4,
-              2
-            ],
-            "stride": [
-              4,
-              2,
-              1
-            ]
-          }
-        },
+        "core_class": null,
+        "core_kwargs": {},
         "obs_randomizer_class": null,
-        "obs_randomizer_kwargs": {
-          "crop_height": 76,
-          "crop_width": 76,
-          "num_crops": 1,
-          "pos_enc": false
-        }
+        "obs_randomizer_kwargs": {}
       }
     }
   }
