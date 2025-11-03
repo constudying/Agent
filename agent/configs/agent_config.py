@@ -37,7 +37,14 @@ class AgentConfig(BaseConfig):
         self.algo.loss.cos_weight = 0.0     # cosine loss weight
 
         # actor network layer dimensions
-        self.algo.actor_layer_dims = [400, 400]
+        self.algo.actor_layer_dims = (1024, 1024)
+
+        # stochastic GMM policy settings
+        self.algo.gmm.enabled = False                   # whether to train a GMM policy
+        self.algo.gmm.num_modes = 5                     # number of GMM modes
+        self.algo.gmm.min_std = 0.0001                  # minimum std output from network
+        self.algo.gmm.std_activation = "softplus"       # activation to use for std output from policy net
+        self.algo.gmm.low_noise_eval = True             # low-std at test-time 
 
         # transformer settings
         self.algo.transformer.enabled = True                         # whether to use transformer for sequence modeling
@@ -62,7 +69,7 @@ class AgentConfig(BaseConfig):
         self.algo.lowlevel.enabled = False                      # whether to train the lowlevel guided policy of MimicPlay (if highlevel is not enabled, an end-to-end lowlevel policy will be trained (BC-transformer baseline))
         self.algo.lowlevel.feat_dim = 656                       # feature dimansion of transformer
         self.algo.lowlevel.n_layer = 4                          # number of layers in transformer
-        self.algo.lowlevel.n_head = 4                           # number of heads in transformer
+        self.algo.lowlevel.n_head = 8                           # number of heads in transformer
         self.algo.lowlevel.block_size = 10                      # sequence block size, which should be same as train.seq_length in json config file
         self.algo.lowlevel.gmm_modes = 5                        # number of gmm modes for action output
         self.algo.lowlevel.action_dim = 7                       # robot action dimension

@@ -52,7 +52,7 @@
     "goal_mode": "nstep",
     "cuda": true,
     "batch_size": 32,
-    "num_epochs": 10,
+    "num_epochs": 1000,
     "seed": 1
   },
   "algo": {
@@ -75,9 +75,15 @@
     },
     "actor_layer_dims": [
       400,
-      128,
-      7
+      400
     ],
+    "gmm": {
+      "enabled": true,
+      "num_modes": 5,
+      "min_std": 0.0001,
+      "std_activation": "softplus",
+      "low_noise_eval": false
+    },
     "transformer": {
       "enabled": true,
       "embed_dim": 204,
@@ -92,14 +98,23 @@
       "transformer_nn_parameter_for_timesteps": false
     },
     "highlevel": {
-      "enabled": false,
+      "enabled": true,
       "ac_dim": 30,
-      "latent_plan_dim": 400
+      "latent_plan_dim": 64
     },
     "lowlevel": {
       "enabled": true,
-      "feat_dim": 656,
-      "trained_highlevel_planner": "/home/lsy/cjh/project1/Agent/agent/../trained_models_highlevel/test/20251022193318/models/model_epoch_50.pth",
+      "feat_dim": 320,
+      "n_layer": 4,
+      "n_head": 4,
+      "block_size": 10,
+      "gmm_modes": 5,
+      "action_dim": 7,
+      "proprio_dim": 7,
+      "spatial_softmax_num_kp": 64,
+      "gmm_min_std": 0.0001,
+      "dropout": 0.1,
+      "trained_highlevel_planner": "/home/lsy/cjh/project1/Agent/trained_models_highlevel/test/20251102115409/models/model_epoch_297_best_validation_-32.72663536071777.pth",
       "eval_goal_img_window": 30,
       "eval_max_goal_img_iter": 5
     },
@@ -162,20 +177,80 @@
             "output_variance": false
           }
         },
-        "obs_randomizer_class": null,
-        "obs_randomizer_kwargs": {}
+        "obs_randomizer_class": "CropRandomizer",
+        "obs_randomizer_kwargs": {
+          "crop_height": 76,
+          "crop_width": 76,
+          "num_crops": 1,
+          "pos_enc": false
+        }
       },
       "depth": {
-        "core_class": null,
-        "core_kwargs": {},
+        "core_class": "VisualCore",
+        "core_kwargs": {
+          "feature_dimension": 64,
+          "flatten": true,
+          "backbone_class": "ResNet18Conv",
+          "backbone_kwargs": {
+            "pretrained": false,
+            "input_coord_conv": false
+          },
+          "pool_class": "SpatialSoftmax",
+          "pool_kwargs": {
+            "num_kp": 32,
+            "learnable_temperature": false,
+            "temperature": 1.0,
+            "noise_std": 0.0,
+            "output_variance": false
+          }
+        },
         "obs_randomizer_class": null,
-        "obs_randomizer_kwargs": {}
+        "obs_randomizer_kwargs": {
+          "crop_height": 76,
+          "crop_width": 76,
+          "num_crops": 1,
+          "pos_enc": false
+        }
       },
       "scan": {
-        "core_class": null,
-        "core_kwargs": {},
+        "core_class": "ScanCore",
+        "core_kwargs": {
+          "feature_dimension": 64,
+          "flatten": true,
+          "pool_class": "SpatialSoftmax",
+          "pool_kwargs": {
+            "num_kp": 32,
+            "learnable_temperature": false,
+            "temperature": 1.0,
+            "noise_std": 0.0,
+            "output_variance": false
+          },
+          "conv_activation": "relu",
+          "conv_kwargs": {
+            "out_channels": [
+              32,
+              64,
+              64
+            ],
+            "kernel_size": [
+              8,
+              4,
+              2
+            ],
+            "stride": [
+              4,
+              2,
+              1
+            ]
+          }
+        },
         "obs_randomizer_class": null,
-        "obs_randomizer_kwargs": {}
+        "obs_randomizer_kwargs": {
+          "crop_height": 76,
+          "crop_width": 76,
+          "num_crops": 1,
+          "pos_enc": false
+        }
       }
     }
   }

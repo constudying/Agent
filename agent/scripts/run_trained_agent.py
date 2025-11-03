@@ -109,7 +109,7 @@ def rollout(policy, env, horizon, render=False, video_writer=None, video_skip=5,
             # get action from policy
             act = policy(ob=obs)
             act = act.squeeze()  # in case action has a singleton batch dimension
-            print(act,"\n")
+            print(f"Action taken: {act}\n") # 打印每一步的动作输出，便于调试
             # play action
             next_obs, r, done, _ = env.step(act)
 

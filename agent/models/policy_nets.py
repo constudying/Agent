@@ -2,9 +2,13 @@
 from collections import OrderedDict
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.distributions as D
 
 import robomimic.utils.tensor_utils as TensorUtils
-from agent.models.obs_nets import RESNET_MIMO_Transformer, RESNET_MIMO_MLP
+from robomimic.models.distributions import TanhWrappedDistribution
+from agent.models.obs_nets import RESNET_MIMO_Transformer, RESNET_MIMO_MLP, MIMO_MLP
 
 
 class MlpActorNetwork(RESNET_MIMO_MLP):
@@ -301,5 +305,185 @@ class ImageActorNetwork(TransformerActorNetwork):
         raise NotImplementedError
  
 
+class ActorNetwork(MIMO_MLP):
+    """
+    A basic policy network that predicts actions from observations.
+    Can optionally be goal conditioned on future observations.
+    """
+    def __init__(
+        self,
+        obs_shapes,
+        ac_dim,
+        mlp_layer_dims,
+        goal_shapes=None,
+        encoder_kwargs=None,
+    ):
+        """
+        Args:
+            obs_shapes (OrderedDict): a dictionary that maps observation keys to
+                expected shapes for observations.
 
+            ac_dim (int): dimension of action space.
+
+            mlp_layer_dims ([int]): sequence of integers for the MLP hidden layers sizes.
+
+            goal_shapes (OrderedDict): a dictionary that maps observation keys to
+                expected shapes for goal observations.
+
+            encoder_kwargs (dict or None): If None, results in default encoder_kwargs being applied. Otherwise, should
+                be nested dictionary containing relevant per-observation key information for encoder networks.
+                Should be of form:
+
+                obs_modality1: dict
+                    feature_dimension: int
+                    core_class: str
+                    core_kwargs: dict
+                        ...
+                        ...
+                    obs_randomizer_class: str
+                    obs_randomizer_kwargs: dict
+                        ...
+                        ...
+                obs_modality2: dict
+                    ...
+        """
+        assert isinstance(obs_shapes, OrderedDict)
+        self.obs_shapes = obs_shapes
+        self.ac_dim = ac_dim
+
+        # set up different observation groups for @MIMO_MLP
+        observation_group_shapes = OrderedDict()
+        observation_group_shapes["obs"] = OrderedDict(self.obs_shapes)
+
+        self._is_goal_conditioned = False
+        if goal_shapes is not None and len(goal_shapes) > 0:
+            assert isinstance(goal_shapes, OrderedDict)
+            self._is_goal_conditioned = True
+            self.goal_shapes = OrderedDict(goal_shapes)
+            observation_group_shapes["goal"] = OrderedDict(self.goal_shapes)
+        else:
+            self.goal_shapes = OrderedDict()
+
+        output_shapes = self._get_output_shapes()
+        super(ActorNetwork, self).__init__(
+            input_obs_group_shapes=observation_group_shapes,
+            output_shapes=output_shapes,
+            layer_dims=mlp_layer_dims,
+            encoder_kwargs=encoder_kwargs,
+        )
+
+    def _get_output_shapes(self):
+        """
+        Allow subclasses to re-define outputs from @MIMO_MLP, since we won't
+        always directly predict actions, but may instead predict the parameters
+        of a action distribution.
+        """
+        return OrderedDict(action=(self.ac_dim,))
+
+    def output_shape(self, input_shape=None):
+        return [self.ac_dim]
+
+    def forward(self, obs_dict, goal_dict=None):
+        actions = super(ActorNetwork, self).forward(obs=obs_dict, goal=goal_dict)["action"]
+        # apply tanh squashing to ensure actions are in [-1, 1]
+        return torch.tanh(actions)
+
+    def _to_string(self):
+        """Info to pretty print."""
+        return "action_dim={}".format(self.ac_dim)
+
+
+class GMMActorNetwork(ActorNetwork):
+    """
+    通过GMM混合高斯分布预测动作的基础策略网络，其混合分布拟合多模态动作分布的作用表现未知
+    """
+    def __init__(
+        self,
+        obs_shapes,
+        ac_dim,
+        mlp_layer_dims,
+        num_modes=5,
+        min_std=0.01,
+        std_activation="softplus",
+        low_noise_eval=True,
+        use_tanh=False,
+        goal_shapes=None,
+        encoder_kwargs=None,
+    ):
+        self.num_modes = num_modes
+        self.min_std = min_std
+        self.low_noise_eval = low_noise_eval
+        self.use_tanh = use_tanh
+
+        self.activations = {
+            "softplus": F.softplus,
+            "exp": torch.exp,
+        }
+        assert std_activation in self.activations, \
+            "@GMMActorNetwork: std_activation must be one of: {}; instead got {}".format(
+                list(self.activations.keys()), std_activation
+            )
+        self.std_activation = std_activation
+
+        super(GMMActorNetwork, self).__init__(
+            obs_shapes=obs_shapes,
+            ac_dim=ac_dim,
+            mlp_layer_dims=mlp_layer_dims,
+            goal_shapes=goal_shapes,
+            encoder_kwargs=encoder_kwargs,
+        )
+
+    def _get_output_shapes(self):
+        return OrderedDict(
+            mean=(self.num_modes, self.ac_dim),
+            scale=(self.num_modes, self.ac_dim),
+            logits=(self.num_modes,),
+        )
+    
+    def forward_train(self, obs_dict, goal_dict=None, return_latent=False):
+        if return_latent:
+            out, back_out, enc_out = MIMO_MLP.forward(self, return_latent=return_latent, obs=obs_dict, goal=goal_dict)
+        else:
+            out = MIMO_MLP.forward(self, return_latent=return_latent, obs=obs_dict, goal=goal_dict)
+
+        means = out["mean"]
+        scales = out["scale"]
+        logits = out["logits"]
+
+        if not self.use_tanh:
+            means = torch.tanh(means)
+
+        if self.low_noise_eval and (not self.training):
+            scales = torch.ones_like(scales) * 1e-4
+        else:
+            scales = self.activations[self.std_activation](scales) + self.min_std
         
+        component_distribution = D.Normal(loc=means, scale=scales)
+        component_distribution = D.Independent(component_distribution, 1)
+
+        mixture_distribution = D.Categorical(logits=logits)
+
+        dist = D.MixtureSameFamily(
+            mixture_distribution=mixture_distribution,
+            component_distribution=component_distribution,
+        )
+
+        if self.use_tanh:
+            dist = TanhWrappedDistribution(base_dist=dist, scale=1.)
+
+        if return_latent:
+            return dist, back_out, enc_out
+        return dist
+    
+    def forward(self, obs_dict, goal_dict=None):
+        """
+        默认不返回中间潜变量
+        """
+        dist = self.forward_train(obs_dict, goal_dict=goal_dict)
+        return dist.sample()
+    
+    def _to_string(self):
+        return "action_dim={}\nnum_modes={}\nmin_std={}\nstd_activation={}\nlow_noise_eval={}".format(
+            self.ac_dim, self.num_modes, self.min_std, self.std_activation, self.low_noise_eval)
+
+

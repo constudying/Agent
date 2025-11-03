@@ -13,6 +13,7 @@ import robomimic.utils.obs_utils as ObsUtils
 # import agent.models.down_utils as DownUtils
 
 from robomimic.models.base_nets import Module, MLP
+from agent.models.transformer import Transformer
 from agent.models.obs_core import AgentVisualCore
 from robomimic.models.obs_core import Randomizer
 from agent.models.transformer import PositionEncoder, TransformerBackbone
@@ -217,6 +218,9 @@ class ObservationEncoder(Module):
         # process modalities by order given by @self.obs_shapes
         feats = []
         for k in self.obs_shapes:
+            # NOTE: 在训练高层模块时，仅处理图像模态，忽略其他模态
+            if set(self.obs_shapes.keys()) == {'robot0_eef_pos', 'agentview_image'} and k != 'agentview_image':
+                continue
             x = obs_dict[k]
             # maybe process encoder input with randomizer
             if self.obs_randomizers[k] is not None:
@@ -271,79 +275,6 @@ class ObservationEncoder(Module):
             msg += textwrap.indent("sharing_from={}\n".format(self.obs_share_mods[k]), indent)
             msg += textwrap.indent(")", ' ' * 4)
         msg += textwrap.indent("\noutput_shape={}".format(self.output_shape()), ' ' * 4)
-        msg = header + '(' + msg + '\n)'
-        return msg
-
-
-class ObservationDecoder(Module):
-    """
-    Module that can generate observation outputs by modality. Inputs are assumed
-    to be flat (usually outputs from some hidden layer). Each observation output
-    is generated with a linear layer from these flat inputs. Subclass this
-    module in order to implement more complex schemes for generating each
-    modality.
-    """
-    def __init__(
-        self,
-        decode_shapes,
-        input_feat_dim,
-    ):
-        """
-        Args:
-            decode_shapes (OrderedDict): a dictionary that maps observation key to
-                expected shape. This is used to generate output modalities from the
-                input features.
-
-            input_feat_dim (int): flat input dimension size
-        """
-        super(ObservationDecoder, self).__init__()
-
-        # important: sort observation keys to ensure consistent ordering of modalities
-        assert isinstance(decode_shapes, OrderedDict)
-        self.obs_shapes = OrderedDict()
-        for k in decode_shapes:
-            self.obs_shapes[k] = decode_shapes[k]
-
-        self.input_feat_dim = input_feat_dim
-        self._create_layers()
-
-    def _create_layers(self):
-        """
-        Create a linear layer to predict each modality.
-        """
-        self.nets = nn.ModuleDict()
-        for k in self.obs_shapes:
-            layer_out_dim = int(np.prod(self.obs_shapes[k]))
-            self.nets[k] = nn.Linear(self.input_feat_dim, layer_out_dim)
-
-    def output_shape(self, input_shape=None):
-        """
-        Returns output shape for this module, which is a dictionary instead
-        of a list since outputs are dictionaries.
-        """
-        return { k : list(self.obs_shapes[k]) for k in self.obs_shapes }
-
-    def forward(self, feats):
-        """
-        Predict each modality from input features, and reshape to each modality's shape.
-        """
-        output = {}
-        for k in self.obs_shapes:
-            out = self.nets[k](feats)
-            output[k] = out.reshape(-1, *self.obs_shapes[k])
-        return output
-
-    def __repr__(self):
-        """Pretty print network."""
-        header = '{}'.format(str(self.__class__.__name__))
-        msg = ''
-        for k in self.obs_shapes:
-            msg += textwrap.indent('\nKey(\n', ' ' * 4)
-            indent = ' ' * 8
-            msg += textwrap.indent("name={}\nshape={}\n".format(k, self.obs_shapes[k]), indent)
-            msg += textwrap.indent("modality={}\n".format(ObsUtils.OBS_KEYS_TO_MODALITIES[k]), indent)
-            msg += textwrap.indent("net=({})\n".format(self.nets[k]), indent)
-            msg += textwrap.indent(")", ' ' * 4)
         msg = header + '(' + msg + '\n)'
         return msg
 
@@ -436,7 +367,6 @@ class ObservationGroupEncoder(Module):
             outputs.append(
                 self.nets[obs_group].forward(inputs[obs_group])
             )
-
         return torch.cat(outputs, dim=-1)
 
     def output_shape(self):
@@ -460,6 +390,78 @@ class ObservationGroupEncoder(Module):
         msg = header + '(' + msg + '\n)'
         return msg
 
+
+class ObservationDecoder(Module):
+    """
+    Module that can generate observation outputs by modality. Inputs are assumed
+    to be flat (usually outputs from some hidden layer). Each observation output
+    is generated with a linear layer from these flat inputs. Subclass this
+    module in order to implement more complex schemes for generating each
+    modality.
+    """
+    def __init__(
+        self,
+        decode_shapes,
+        input_feat_dim,
+    ):
+        """
+        Args:
+            decode_shapes (OrderedDict): a dictionary that maps observation key to
+                expected shape. This is used to generate output modalities from the
+                input features.
+
+            input_feat_dim (int): flat input dimension size
+        """
+        super(ObservationDecoder, self).__init__()
+
+        # important: sort observation keys to ensure consistent ordering of modalities
+        assert isinstance(decode_shapes, OrderedDict)
+        self.obs_shapes = OrderedDict()
+        for k in decode_shapes:
+            self.obs_shapes[k] = decode_shapes[k]
+
+        self.input_feat_dim = input_feat_dim
+        self._create_layers()
+
+    def _create_layers(self):
+        """
+        Create a linear layer to predict each modality.
+        """
+        self.nets = nn.ModuleDict()
+        for k in self.obs_shapes:
+            layer_out_dim = int(np.prod(self.obs_shapes[k]))
+            self.nets[k] = nn.Linear(self.input_feat_dim, layer_out_dim)
+
+    def output_shape(self, input_shape=None):
+        """
+        Returns output shape for this module, which is a dictionary instead
+        of a list since outputs are dictionaries.
+        """
+        return { k : list(self.obs_shapes[k]) for k in self.obs_shapes }
+
+    def forward(self, feats):
+        """
+        Predict each modality from input features, and reshape to each modality's shape.
+        """
+        output = {}
+        for k in self.obs_shapes:
+            out = self.nets[k](feats)
+            output[k] = out.reshape(-1, *self.obs_shapes[k])
+        return output
+
+    def __repr__(self):
+        """Pretty print network."""
+        header = '{}'.format(str(self.__class__.__name__))
+        msg = ''
+        for k in self.obs_shapes:
+            msg += textwrap.indent('\nKey(\n', ' ' * 4)
+            indent = ' ' * 8
+            msg += textwrap.indent("name={}\nshape={}\n".format(k, self.obs_shapes[k]), indent)
+            msg += textwrap.indent("modality={}\n".format(ObsUtils.OBS_KEYS_TO_MODALITIES[k]), indent)
+            msg += textwrap.indent("net=({})\n".format(self.nets[k]), indent)
+            msg += textwrap.indent(")", ' ' * 4)
+        msg = header + '(' + msg + '\n)'
+        return msg
 
 
 def downstream_decoder_factory(
@@ -727,7 +729,110 @@ class RESNET_MIMO_Transformer(Module):
         return msg
         
 
+class MIMO_MLP(Module):
+    """
+    提供多输入多输出的整体网络，用于动作输出
+    """
+    def __init__(
+        self,
+        input_obs_group_shapes,
+        output_shapes,
+        layer_dims,
+        layer_func="linear", 
+        activation="relu",
+        encoder_kwargs=None,
+    ):
+        super(MIMO_MLP, self).__init__()
+        assert isinstance(output_shapes, OrderedDict), "output_shapes must be an OrderedDict"
 
+        self.input_obs_group_shapes = input_obs_group_shapes
+        self.output_shapes = output_shapes
+
+        self.nets = nn.ModuleDict()
+        self.nets["encoder"] = ObservationGroupEncoder(
+            observation_group_shapes=input_obs_group_shapes,
+            encoder_kwargs=encoder_kwargs,
+        )
+
+        enc_output_dim = self.nets["encoder"].output_shape()[0]
+        for k in self.input_obs_group_shapes['obs']:
+            if k != 'agentview_image':
+                enc_output_dim -= self.input_obs_group_shapes['obs'][k][0]
+        enc_output_dim = int(enc_output_dim / 2)  # 其中包含query和context，取一般大小作为Transformer的输入size
+
+        self.nets['backbone'] = Transformer(
+            embed_dim=enc_output_dim,
+            context_length=1,
+            attn_dropout=0.1,
+            output_dropout=0.1,
+            ffw_hidden_dim=2048,
+            ffw_dropout=0.1,
+            num_heads=8,
+            num_encoder_layers=4,
+            num_decoder_layers=4,
+            activation='relu',
+        )
+
+        backbone_output_dim = enc_output_dim + self.input_obs_group_shapes['obs']['robot0_eef_pos'][0]  # Transformer输出与非图像模态拼接作为解码器输入
+
+        self.nets["mlp"] = MLP(
+            input_dim=backbone_output_dim,
+            output_dim=layer_dims[-1],
+            layer_dims=layer_dims[:-1],
+            layer_func=get_activation(layer_func),
+            activation=get_activation(activation),
+            output_activation=get_activation(activation), # make sure non-linearity is applied before decoder
+        )
+
+        self.nets["decoder"] = ObservationDecoder(
+            decode_shapes=self.output_shapes,
+            input_feat_dim=layer_dims[-1],
+        )
+
+    def forward(self, return_latent=False, **inputs):
+        """
+        模型的底层前向传播函数
+        """
+        enc_outputs = self.nets["encoder"].forward(**inputs)
+        backbone_outputs = self.nets['backbone'].forward(enc_outputs)
+        # 拼接非图像模态作为Transformer的输入
+        # cat_outputs = torch.cat([
+        #     backbone_outputs,
+        #     inputs['obs']['robot0_eef_pos'],
+        # ], dim=-1)
+        cat_outputs = torch.cat([
+            backbone_outputs,
+            inputs['obs']['robot0_eef_pos'].unsqueeze(0), # 补齐batch维度
+        ], dim=-1)
+        mlp_outputs = self.nets["mlp"].forward(cat_outputs)
+        dec_outputs = self.nets["decoder"].forward(mlp_outputs)
+
+        if return_latent:
+            return dec_outputs, backbone_outputs.detach(), enc_outputs.detach()
+        return dec_outputs
+
+    def output_shape(self, input_shape=None):
+        return { k : list(self.output_shapes[k]) for k in self.output_shapes }
+    
+    def _to_string(self):
+        """
+        Subclasses should override this method to print out info about network / policy.
+        """
+        return ''
+
+    def __repr__(self):
+        """Pretty print network."""
+        header = '{}'.format(str(self.__class__.__name__))
+        msg = ''
+        indent = ' ' * 4
+        if self._to_string() != '':
+            msg += textwrap.indent("\n" + self._to_string() + "\n", indent)
+        msg += textwrap.indent("\nencoder={}".format(self.nets["encoder"]), indent)
+        msg += textwrap.indent("\n\nbackbone={}".format(self.nets["backbone"]), indent)
+        msg += textwrap.indent("\n\nmlp={}".format(self.nets["mlp"]), indent)
+        msg += textwrap.indent("\n\ndecoder={}".format(self.nets["decoder"]), indent)
+        msg = header + '(' + msg + '\n)'
+        return msg
 
 
 

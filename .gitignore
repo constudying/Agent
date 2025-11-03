@@ -8,3 +8,7 @@ trained_models_*/
 
 agent.egg-info/
 
+__pycache__/
+*.pyc
+
+note.md

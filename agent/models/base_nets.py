@@ -26,6 +26,10 @@ def get_activation(activation: str):
         return nn.LeakyReLU
     elif activation == "linear":
         return nn.Linear
+    elif activation == "gelu":
+        return nn.GELU
+    elif activation == "glu":
+        return nn.GLU
     else:
         raise ValueError(f"Unsupported activation: {activation}")
 
