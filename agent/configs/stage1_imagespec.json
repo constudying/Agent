@@ -61,9 +61,7 @@
         "learning_rate": {
           "initial": 0.0001,
           "decay_factor": 0.1,
-          "epoch_schedule": [
-            250
-          ]
+          "epoch_schedule": []
         },
         "regularization": {
           "L2": 0.0
@@ -77,7 +75,7 @@
     },
     "actor_layer_dims": [
       400,
-      400
+      512
     ],
     "gmm": {
       "enabled": true,
@@ -134,35 +132,39 @@
       "obs": {
         "low_dim": [
           "robot0_eef_pos",
-          "robot0_eef_pos_future_traj"
+          "robot0_eef_pos_step_traj_current",
+          "robot0_eef_pos_step_traj_future"
         ],
         "rgb": [
           "agentview_image"
         ],
-        "depth": [],
+        "depth": [
+          "agentview_depth"
+        ],
         "scan": []
       },
       "goal": {
         "low_dim": [],
-        "rgb": [
-          "agentview_image"
-        ],
+        "rgb": [],
         "depth": [],
         "scan": []
       }
     },
     "encoder": {
       "low_dim": {
-        "core_class": null,
-        "core_kwargs": {},
+        "core_class": "AgentProjectCore",
+        "core_kwargs": {
+          "output_dimension": 512,
+          "activation": null
+        },
         "obs_randomizer_class": null,
         "obs_randomizer_kwargs": {}
       },
       "rgb": {
         "core_class": "AgentVisualCore",
         "core_kwargs": {
-          "feature_dimension": 64,
-          "flatten": true,
+          "feature_dimension": null,
+          "flatten": false,
           "backbone_class": "ResNet18Conv",
           "backbone_kwargs": {
             "pretrained": false,
@@ -186,10 +188,10 @@
         }
       },
       "depth": {
-        "core_class": "VisualCore",
+        "core_class": "AgentVisualCore",
         "core_kwargs": {
-          "feature_dimension": 64,
-          "flatten": true,
+          "feature_dimension": null,
+          "flatten": false,
           "backbone_class": "ResNet18Conv",
           "backbone_kwargs": {
             "pretrained": false,

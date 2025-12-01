@@ -26,6 +26,7 @@ from robomimic.envs.wrappers import EnvWrapper
 
 import agent
 from agent.algo import RolloutPolicy
+from torch.utils.data import DataLoader, Dataset
 
 def get_exp_dir(config, auto_remove_exp_dir=False):
     """

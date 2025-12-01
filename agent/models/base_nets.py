@@ -130,18 +130,11 @@ class ConvBase(Module):
         # x.shape: torch.Size([32, 1, 3, 84, 84])
         # 对于nn.Sequential模块，不存在显式forward方法，因此直接调用此处forward方法后启用自身Sequential的底层forward方法
         # 因此针对Sequential模块的输出形状检查在此处进行
-        had_seq = False
-        if inputs.dim() == 5:
-            bs, seq, _, _, _ = inputs.shape
-            inputs = inputs.view(bs * seq, *inputs.shape[2:])  # 合并 batch 和 sequence 维度
-            had_seq = True
         x = self.nets(inputs)
         if list(self.output_shape(list(inputs.shape)[1:])) != list(x.shape)[1:]:
             raise ValueError('Size mismatch: expect size %s, but got size %s' % (
                 str(self.output_shape(list(inputs.shape)[1:])), str(list(x.shape)[1:]))
             )
-        if had_seq:
-            x = x.view(bs, seq, *x.shape[1:])  # 恢复 batch 和 sequence 维度
         return x
 
 

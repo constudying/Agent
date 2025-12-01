@@ -90,8 +90,8 @@ class AgentVisualCore(EncoderCore, BaseNets.ConvBase):
         Forward pass through visual core.
         """
         ndim = len(self.input_shape)
-        # # inputs.shape: torch.Size([32, 1, 3, 84, 84])
-        assert tuple(inputs.shape)[-ndim:] == tuple(self.input_shape)
+        # inputs.shape: torch.Size([32, 1, 3, 84, 84])
+        # assert tuple(inputs.shape)[-ndim:] == tuple(self.input_shape) # 暂时不使用干扰器
         return super(AgentVisualCore, self).forward(inputs)
 
     def __repr__(self):
@@ -107,3 +107,39 @@ class AgentVisualCore(EncoderCore, BaseNets.ConvBase):
         return msg
 
 
+class AgentProjectCore(EncoderCore):
+    
+    def __init__(
+        self,
+        input_shape,
+        output_dimension,
+        activation=None,
+    ):
+        super(AgentProjectCore, self).__init__(input_shape=input_shape)
+
+        self.output_dimension = output_dimension
+        # 暂时不启用，避免引入不必要的非线性
+        if activation is not None:
+            self.activation = activation
+
+        self.proj_net = nn.Linear(input_shape[-1], output_dimension)
+
+    def output_shape(self, input_shape):
+        assert input_shape is not None, "@ProjectCore-output_shape: input_shape must be provided to compute output shape."
+        output_shape = list(input_shape)
+        output_shape[-1] = self.proj_net.out_features
+        return output_shape
+
+    def forward(self, inputs):
+        return self.proj_net(inputs)
+    
+    def __repr__(self):
+        """Pretty print network."""
+        header = '{}'.format(str(self.__class__.__name__))
+        msg = ''
+        indent = ' ' * 2
+        msg += textwrap.indent(
+            "\ninput_shape={}\noutput_shape={}".format(self.input_shape, self.output_shape(self.input_shape)), indent)
+        msg += textwrap.indent("\nproj_net={}".format(self.proj_net), indent)
+        msg = header + '(' + msg + '\n)'
+        return msg

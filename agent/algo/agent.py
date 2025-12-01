@@ -2,6 +2,7 @@ from collections import OrderedDict
 
 import copy
 import h5py
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -540,10 +541,12 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         assert self.algo_config.highlevel.enabled
         assert not self.algo_config.lowlevel.enabled
 
-        del self.obs_shapes['robot0_eef_pos_future_traj']
+        del self.obs_shapes['robot0_eef_pos_step_traj_future']
         self.ac_dim = self.algo_config.highlevel.ac_dim
+        self.obs_shapes['robot0_eef_pos_step_traj_current'] = [30,]
 
         self.nets = nn.ModuleDict()
+
         self.nets["policy"] = PolicyNets.GMMActorNetwork(
             obs_shapes=self.obs_shapes,
             goal_shapes=self.goal_shapes,
@@ -580,6 +583,28 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         recurse_helper(batch)
         batch["goal_obs"]["agentview_image"] = batch["goal_obs"]["agentview_image"][:, 0]
 
+        # Reshape trajectory from [seq, gap*3] to [seq, gap, 3]
+        # if 'robot0_eef_pos_past_traj' in batch['obs']:
+        #     batch['obs']['robot0_eef_pos_past_traj'] = batch['obs']['robot0_eef_pos_past_traj'].view(
+        #       batch['obs']['robot0_eef_pos_past_traj'].shape[0], -1, 3
+        #     )
+        
+        # # Reshape past trajectory delta from [seq, gap*3] to [seq, gap, 3]
+        # if 'robot0_eef_pos_past_traj_delta' in batch['obs']:
+        #     batch['obs']['robot0_eef_pos_past_traj_delta'] = batch['obs']['robot0_eef_pos_past_traj_delta'].view(
+        #       batch['obs']['robot0_eef_pos_past_traj_delta'].shape[0], -1, 3
+        #     )
+
+        if 'robot0_eef_pos_step_traj_current' in batch['obs']:
+            batch['obs']['robot0_eef_pos_step_traj_current'] = batch['obs']['robot0_eef_pos_step_traj_current'].view(
+              batch['obs']['robot0_eef_pos_step_traj_current'].shape[0], -1, 3
+            )
+
+        # if 'robot0_eef_pos_step_traj_future' in batch['obs']:
+        #     batch['obs']['robot0_eef_pos_step_traj_future'] = batch['obs']['robot0_eef_pos_step_traj_future'].view(
+        #       batch['obs']['robot0_eef_pos_step_traj_future'].shape[0], -1, 3
+        #     )
+
         return TensorUtils.to_device(TensorUtils.to_float(batch), self.device)
 
     def train_on_batch(self, batch, epoch, validate=False):
@@ -588,7 +613,7 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         """
         with TorchUtils.maybe_no_grad(no_grad=validate):
             info = super(Highlevel_GMM_pretrain, self).train_on_batch(batch, epoch, validate=validate)
-            predictions = self._forward_training(batch)
+            predictions = self._forward_training(batch, epoch)
             losses = self._compute_losses(predictions, batch)
 
             info["predictions"] = TensorUtils.detach(predictions)
@@ -606,55 +631,180 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         """
         assert 'agentview_image' in obs.keys()
 
-        if len(obs['agentview_image'].shape) == 5:
-            bs, seq, c, h, w = obs['agentview_image'].shape
+        # if len(obs['agentview_image'].shape) == 5:
+        #     bs, seq, c, h, w = obs['agentview_image'].shape
 
-            for item in ['agentview_image']:
-                obs[item] = obs[item].view(bs * seq, c, h, w)
-                goal[item] = goal[item].view(bs * seq, c, h, w)
+        #     for item in ['agentview_image']:
+        #         obs[item] = obs[item].view(bs * seq, c, h, w)
+        #         goal[item] = goal[item].view(bs * seq, c, h, w)
 
-            dists, back_out, enc_out = self.nets["policy"].forward_train(
-                obs_dict=obs,
-                goal_dict=goal,
-                return_latent=True,
-            )
-            act_out_all = dists.mean
-            act_out = act_out_all
+        dists, back_out = self.nets["policy"].forward_train(
+            obs_dict=obs,
+            goal_dict=goal,
+            return_latent=True,
+        )
 
-            for item in ['agentview_image']:
-                obs[item] = obs[item].view(bs, seq, c, h, w)
-                goal[item] = goal[item].view(bs, seq, c, h, w)
+        back_out = back_out[..., -512:].unsqueeze(1)  # 只取最后时间步的输出作为潜向量表示，并增加时间维度
 
-            back_out_feature_size = back_out.shape[-1]
-            enc_out_feature_size = enc_out.shape[-1]
+        act_out_all = dists.mean
+        act_out = act_out_all
 
-            back_out = back_out.view(bs, seq, back_out_feature_size)
-        else:
-            dists, back_out, enc_out = self.nets["policy"].forward_train(
-                obs_dict=obs,
-                goal_dict=goal,
-                return_latent=True,
-            )
-            act_out_all = dists.mean
-            act_out = act_out_all
+            # for item in ['agentview_image']:
+            #     obs[item] = obs[item].view(bs, seq, c, h, w)
+            #     goal[item] = goal[item].view(bs, seq, c, h, w)
+
+            # back_out_feature_size = back_out.shape[-1]
+            # enc_out_feature_size = enc_out.shape[-1]
+
+            # back_out = back_out.view(bs, seq, back_out_feature_size)
+        # else:
+        #     dists, back_out, enc_out = self.nets["policy"].forward_train(
+        #         obs_dict=obs,
+        #         goal_dict=goal,
+        #         return_latent=True,
+        #     )
+        #     act_out_all = dists.mean
+        #     act_out = act_out_all
 
         return act_out, back_out
 
-    def _forward_training(self, batch):
+    def _forward_training(self, batch, epoch):
         """
         模型训练时使用，以字典形式返回网络输出
+        
+        设计思路：预测未来轨迹的关键路径点（而非完整30维轨迹）
+        - 降低维度：从30维降到9维（3个关键点）
+        - 保留规划能力：仍然能表达"往哪里移动"和"如何绕过障碍"
+        - GMM多模态：建模多种可能的路径
+        
+        Scheduled Sampling策略说明：
+        架构: past_traj[10步] → 模型 → future_traj[10步]
+        
+        问题：模型预测的是future，无法直接用来构造past（时间轴不匹配）
+        
+        可行方案：
+        1. 样本级别的scheduled sampling（简单）：随机选择部分样本用预测的future作为新的past
+        2. 时间步级别的scheduled sampling（复杂）：需要滑窗重构数据
+        
+        当前实现：方案1 - 简单且有效
+        - 以一定概率随机选择batch中的样本
+        - 用模型预测的future_traj[0:10]替换这些样本的past_traj
+        - 然后预测新的future_traj[10:20]
         """
-        dists = self.nets["policy"].forward_train(
+        # Scheduled sampling for teacher forcing (样本级别)
+        # if (epoch // 100) % 2 == 1:
+        #     # 逆指数衰减概率: 从1开始逐渐衰减
+        #     k = 0.995
+        #     teacher_forcing_ratio = k ** (epoch - 100)
+
+        #     start_point = batch['obs']['robot0_eef_pos_step_traj_current'][:, 0:1]  # [batch_size, 1, 3]
+        #     padded_input = torch.zeros_like(batch['obs']['robot0_eef_pos_step_traj_current'])
+        #     padded_input[:, 0] = start_point.squeeze(1)
+
+        #     with torch.no_grad():
+        #         temp_obs = batch['obs'].copy()
+        #         temp_obs['robot0_eef_pos_step_traj_current'] = padded_input
+
+        #         temp_dists = self.nets["policy"].forward_train(
+        #             obs_dict=temp_obs,
+        #             goal_dict=batch['goal_obs'],
+        #             fill_mode='autoregressive',
+        #         )
+
+        #         predicted_10steps = temp_dists.mean.view(-1, 10, 3)  # [batch_size, 10, 3]
+        #         ground_truth_pos = batch['obs']['robot0_eef_pos_step_traj_current']  # [batch_size, 10, 3]
+        #         # 随机选择需要做scheduled sampling的样本
+        #         # True表示使用真值，False表示使用预测值替换
+        #         use_ground_truth_mask = torch.bernoulli(
+        #             torch.full(
+        #                 (
+        #                     batch['obs']['robot0_eef_pos_step_traj_current'].shape[0], 10), 
+        #                     teacher_forcing_ratio, 
+        #                     device=batch['obs']['robot0_eef_pos_step_traj_current'].device)
+        #         ).bool()  # [batch_size]
+
+        #         mixed_input = torch.where(
+        #             use_ground_truth_mask.unsqueeze(-1), 
+        #             ground_truth_pos, 
+        #             predicted_10steps
+        #         )
+        #         batch['obs']['robot0_eef_pos_step_traj_current'] = mixed_input
+
+        dists, entropy_loss = self.nets["policy"].forward_train(
             obs_dict=batch["obs"],
-            goal_dict=batch["goal_obs"]
+            goal_dict=batch["goal_obs"],
+            fill_mode='sliding_window',
+            return_attention_weights=True,
         )
 
         assert len(dists.batch_shape) == 1, "@Highlevel_GMM_pretrain: action distribution must be 1D batch shape during training."
 
-        log_probs = dists.log_prob(batch["obs"]["robot0_eef_pos_future_traj"])
+        # 从完整轨迹中提取关键路径点
+        # future_traj: [batch, 1, 30] -> reshape -> [batch, 10, 3]
+        # future_traj_full = batch["obs"]["robot0_eef_pos_future_traj"]
+        # future_traj_seq = future_traj_full.view(-1, 10, 3)  # [batch, timesteps, xyz]
+        
+        # # 选择3个关键点：25%, 50%, 100% (索引2, 5, 9)
+        # # 这样能表达路径的前期、中期、终点方向
+        # key_indices = [2, 5, 9]
+        # keypoints = future_traj_seq[:, key_indices, :]  # [batch, 3, 3]
+        # keypoints_flat = keypoints.reshape(-1, 9).unsqueeze(1)  # [batch, 1, 9]
+        
+        # log_probs = dists.log_prob(keypoints_flat)
+        log_probs = dists.log_prob(batch["obs"]["robot0_eef_pos_step_traj_future"])
+        
+        # 添加诊断信息（每100个batch打印一次）
+        if not hasattr(self, '_diagnostic_counter'):
+            self._diagnostic_counter = 0
+        self._diagnostic_counter += 1
+        
+        if self._diagnostic_counter % 1000 == 1:
+            print(f"\n[Iter {self._diagnostic_counter}] Training Diagnostics:")
+            print(f"  Log prob: {log_probs.mean().item():.2f} (higher is better)")
+            print(f"  Entropy: {entropy_loss.item():.4f}")
+            
+            # 检查预测质量
+            # 获取模态权重和每个模态的均值
+            mode_probs = dists.mixture_distribution.probs[0]  # [5] - 每个模态的权重
+            all_modes_mean = dists.component_distribution.mean[0]  # [5, 9]
+            true_keypoints_flat = batch["obs"]["robot0_eef_pos_step_traj_future"][0]  # [9]
+            # true_keypoints_flat = keypoints[0].reshape(-1)  # [3, 3] -> [9]
+            
+            print(f"  Mode weights: {mode_probs.detach().cpu().numpy()}")
+            print(f"  Mode predictions vs ground truth:")
+            
+            best_mode_idx = None
+            best_error = float('inf')
+            
+            for mode_idx in range(all_modes_mean.shape[0]):
+                # 将每个模态的预测 reshape 成 [3, 3]
+                pred_keypoints = all_modes_mean[mode_idx].view(10, 3)  # [9] -> [3, 3]
+                true_keypoints = batch["obs"]["robot0_eef_pos_step_traj_future"][0].view(10, 3)  # [3, 3]
+                
+                # 计算每个关键点的欧氏距离误差
+                keypoint_errors = (pred_keypoints - true_keypoints).norm(dim=1)  # [3]
+                mean_error = keypoint_errors.mean().item()
+                weight = mode_probs[mode_idx].item()
+                
+                print(f"    Mode {mode_idx} (weight={weight:.3f}): "
+                      f"errors=[{keypoint_errors[0].item():.4f}, {keypoint_errors[1].item():.4f}, {keypoint_errors[2].item():.4f}, {keypoint_errors[3].item():.4f}, {keypoint_errors[4].item():.4f}, {keypoint_errors[5].item():.4f}, {keypoint_errors[6].item():.4f}, {keypoint_errors[7].item():.4f}, {keypoint_errors[8].item():.4f}, {keypoint_errors[9].item():.4f}], "
+                      f"mean={mean_error:.4f}")
+                
+                if mean_error < best_error:
+                    best_error = mean_error
+                    best_mode_idx = mode_idx
+            
+            print(f"  Best mode: {best_mode_idx} (mean error: {best_error:.4f})")
+            
+            # 也显示混合均值的误差作为对比
+            mixture_pred = dists.mean[0].view(10, 3)  # [30] -> [10, 3]
+            mixture_errors = (mixture_pred - batch["obs"]["robot0_eef_pos_step_traj_future"][0].view(10, 3)).norm(dim=1)
+            print(f"  Mixture mean errors: [{mixture_errors[0].item():.4f}, {mixture_errors[1].item():.4f}, {mixture_errors[2].item():.4f}, {mixture_errors[3].item():.4f}, {mixture_errors[4].item():.4f}, {mixture_errors[5].item():.4f}, {mixture_errors[6].item():.4f}, {mixture_errors[7].item():.4f}, {mixture_errors[8].item():.4f}, {mixture_errors[9].item():.4f}], "
+                  f"mean={mixture_errors.mean().item():.4f}")
 
         predictions = OrderedDict(
             log_probs=log_probs,
+            entropy=entropy_loss,
         )
         return predictions
     
@@ -665,6 +815,7 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         action_loss = -predictions["log_probs"].mean()
         return OrderedDict(
             log_probs = -action_loss,
+            entropy = predictions["entropy"],
             action_loss = action_loss,
         )
 
@@ -677,8 +828,8 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         policy_grad_norms = TorchUtils.backprop_for_loss(
             net=self.nets["policy"],
             optim=self.optimizers["policy"],
-            loss=losses["action_loss"],
-            max_grad_norm=90,
+            loss=losses["action_loss"] + losses["entropy"],
+            # max_grad_norm=10.0,
         )
         info["policy_grad_norms"] = policy_grad_norms
         return info
@@ -776,6 +927,11 @@ class Lowlevel_RNN_agent(PolicyAlgo):
         
         recurse_helper(batch)
         batch["goal_obs"]["agentview_image"] = batch["goal_obs"]["agentview_image"][:, 0]
+
+        if 'robot0_eef_pos_step_traj_current' in batch['obs']:
+            batch['obs']['robot0_eef_pos_step_traj_current'] = batch['obs']['robot0_eef_pos_step_traj_current'].view(
+              batch['obs']['robot0_eef_pos_step_traj_current'].shape[0], -1, 3
+            )
 
         return TensorUtils.to_device(TensorUtils.to_float(batch), self.device)
 
@@ -898,7 +1054,6 @@ class Lowlevel_RNN_agent(PolicyAlgo):
             net=self.nets["policy"],
             optim=self.optimizers["policy"],
             loss=losses["action_loss"],
-            max_grad_norm=90,
         )
         info["policy_grad_norms"] = policy_grad_norms
         return info

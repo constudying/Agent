@@ -27,7 +27,7 @@
     "rollout": {
       "enabled": false,
       "n": 10,
-      "horizon": 10,
+      "horizon": 1600,
       "rate": 50,
       "warmstart": 0,
       "terminate_on_success": true
@@ -100,11 +100,11 @@
     "highlevel": {
       "enabled": true,
       "ac_dim": 30,
-      "latent_plan_dim": 64
+      "latent_plan_dim": 512
     },
     "lowlevel": {
       "enabled": true,
-      "feat_dim": 320,
+      "feat_dim": 768,
       "n_layer": 4,
       "n_head": 4,
       "block_size": 10,
@@ -114,7 +114,7 @@
       "spatial_softmax_num_kp": 64,
       "gmm_min_std": 0.0001,
       "dropout": 0.1,
-      "trained_highlevel_planner": "/home/lsy/cjh/project1/Agent/trained_models_highlevel/test/20251102115409/models/model_epoch_297_best_validation_-32.72663536071777.pth",
+      "trained_highlevel_planner": "/home/lsy/cjh/project1/Agent/trained_models_highlevel/test/20251114160604/models/model_epoch_1_best_validation_74.92505569458008.pth",
       "eval_goal_img_window": 30,
       "eval_max_goal_img_iter": 5
     },
@@ -132,6 +132,8 @@
       "obs": {
         "low_dim": [
           "robot0_eef_pos",
+          "robot0_eef_pos_step_traj_current",
+          "robot0_eef_pos_step_traj_future",
           "robot0_eef_quat",
           "robot0_gripper_qpos"
         ],
@@ -139,7 +141,9 @@
           "agentview_image",
           "robot0_eye_in_hand_image"
         ],
-        "depth": [],
+        "depth": [
+          "agentview_depth"
+        ],
         "scan": []
       },
       "goal": {
@@ -153,8 +157,11 @@
     },
     "encoder": {
       "low_dim": {
-        "core_class": null,
-        "core_kwargs": {},
+        "core_class": "AgentProjectCore",
+        "core_kwargs": {
+          "output_dimension": 512,
+          "activation": null
+        },
         "obs_randomizer_class": null,
         "obs_randomizer_kwargs": {}
       },

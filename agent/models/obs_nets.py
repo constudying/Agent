@@ -16,7 +16,7 @@ from robomimic.models.base_nets import Module, MLP
 from agent.models.transformer import Transformer
 from agent.models.obs_core import AgentVisualCore
 from robomimic.models.obs_core import Randomizer
-from agent.models.transformer import PositionEncoder, TransformerBackbone
+from agent.models.transformer import Transformer
 from agent.models.base_nets import get_activation
 
 def obs_encoder_factory(
@@ -52,6 +52,12 @@ def obs_encoder_factory(
                 ...
     """
     enc = ObservationEncoder(feature_activation=feature_activation)
+    # NOTE: 需要在这里登记所有使用到的 obs key 的shape
+    # obs_shapes['robot0_eef_pos_past_traj'] = [10, 3]
+    # obs_shapes['robot0_eef_pos_past_traj_delta'] = [9, 3]
+    obs_shapes['robot0_eef_pos_step_traj_current'] = [10, 3]
+
+
     for k, obs_shape in obs_shapes.items():
         obs_modality = ObsUtils.OBS_KEYS_TO_MODALITIES[k]
         enc_kwargs = deepcopy(ObsUtils.DEFAULT_ENCODER_KWARGS[obs_modality]) if encoder_kwargs is None else \
@@ -214,37 +220,45 @@ class ObservationEncoder(Module):
         assert set(self.obs_shapes.keys()).issubset(obs_dict), "ObservationEncoder: {} does not contain all modalities {}".format(
             list(obs_dict.keys()), list(self.obs_shapes.keys())
         )
-
         # process modalities by order given by @self.obs_shapes
-        feats = []
+        feats_dict = OrderedDict()
         for k in self.obs_shapes:
-            # NOTE: 在训练高层模块时，仅处理图像模态，忽略其他模态
-            if set(self.obs_shapes.keys()) == {'robot0_eef_pos', 'agentview_image'} and k != 'agentview_image':
-                continue
             x = obs_dict[k]
-            # maybe process encoder input with randomizer
-            if self.obs_randomizers[k] is not None:
-                x = self.obs_randomizers[k].forward_in(x)
-            # maybe process with obs net
-            if self.obs_nets[k] is not None:
-                # 这里会调用不同的编码器网络，编码不同模态
-                # agentview_image输入形状： 32*1*3*84*84
-                # if len(x.shape) == 5:
-                #     bs, seq, c, h, w = x.shape
-                #     x = x.view(bs * seq, c, h, w)
-                # 暂时不在此处处理时序维度，交给各个编码器网络自己处理，避免重复代码，保持高层代码接口统一
-                x = self.obs_nets[k](x)
-                if self.activation is not None:
-                    x = self.activation(x)
-            # maybe process encoder output with randomizer
-            if self.obs_randomizers[k] is not None:
-                x = self.obs_randomizers[k].forward_out(x)
-            # flatten to [B, D]
-            x = TensorUtils.flatten(x, begin_axis=1)
-            feats.append(x)
 
-        # concatenate all features together
-        return torch.cat(feats, dim=-1)
+            # # maybe process encoder input with randomizer
+            # if self.obs_randomizers[k] is not None:
+            #     x = self.obs_randomizers[k].forward_in(x)
+
+            # maybe process with obs net
+            has_extra_dim = False
+            if self.obs_nets[k] is not None:
+              has_extra_dim = (len(x.shape) == 5 or len(x.shape) == 3)  # [B, T, C, H, W] or [B, T, D]
+              if has_extra_dim:
+                # 输入含有时序维度 [B, T, C, H, W]，需要将时序维度和批次维度合并
+                b, t = x.shape[0], x.shape[1]
+                x = x.reshape(b * t, *x.shape[2:])
+
+              x = self.obs_nets[k](x)
+              # if self.activation is not None:
+              #     x = self.activation(x)
+
+              if has_extra_dim:
+                # 恢复时序维度 [B*T, D] -> [B, T, D]
+                x = x.reshape(b, t, *x.shape[1:])
+                if len(x.shape) == 5:
+                    # [B, T, D] -> [B, D]
+                    x = x.permute(0, 1, 3, 4, 2).contiguous()
+                    x = x.reshape(b, x.shape[1] * x.shape[2] * x.shape[3], x.shape[4])
+                has_extra_dim = False
+
+            # # maybe process encoder output with randomizer
+            # if self.obs_randomizers[k] is not None:
+            #     x = self.obs_randomizers[k].forward_out(x)
+            # # flatten to [B, D]
+            # x = TensorUtils.flatten(x, begin_axis=1)
+            feats_dict[k] = x
+
+        return feats_dict
 
     def output_shape(self, input_shape=None):
         """
@@ -360,14 +374,12 @@ class ObservationGroupEncoder(Module):
         assert set(self.observation_group_shapes.keys()).issubset(inputs), "{} does not contain all observation groups {}".format(
             list(inputs.keys()), list(self.observation_group_shapes.keys())
         )
-        outputs = []
-        # Deterministic order since self.observation_group_shapes is OrderedDict
+        # 使用OrderedDict保留各个观测组的编码输出，方便后续处理，适应具体模型的接口
+        outputs_dict = OrderedDict()
         for obs_group in self.observation_group_shapes:
-            # pass through encoder
-            outputs.append(
-                self.nets[obs_group].forward(inputs[obs_group])
-            )
-        return torch.cat(outputs, dim=-1)
+            # pass through encoder and store features by group
+            outputs_dict[obs_group] = self.nets[obs_group].forward(inputs[obs_group])
+        return outputs_dict
 
     def output_shape(self):
         """
@@ -431,6 +443,12 @@ class ObservationDecoder(Module):
         for k in self.obs_shapes:
             layer_out_dim = int(np.prod(self.obs_shapes[k]))
             self.nets[k] = nn.Linear(self.input_feat_dim, layer_out_dim)
+            # self.nets[k] = nn.Sequential(
+            #   nn.Linear(self.input_feat_dim, 1024),
+            #   nn.ReLU(),
+            #   nn.Dropout(0.1),
+            #   nn.Linear(1024, layer_out_dim),
+            # )
 
     def output_shape(self, input_shape=None):
         """
@@ -754,61 +772,108 @@ class MIMO_MLP(Module):
             encoder_kwargs=encoder_kwargs,
         )
 
-        enc_output_dim = self.nets["encoder"].output_shape()[0]
-        for k in self.input_obs_group_shapes['obs']:
-            if k != 'agentview_image':
-                enc_output_dim -= self.input_obs_group_shapes['obs'][k][0]
-        enc_output_dim = int(enc_output_dim / 2)  # 其中包含query和context，取一般大小作为Transformer的输入size
-
         self.nets['backbone'] = Transformer(
-            embed_dim=enc_output_dim,
-            context_length=1,
+            embed_dim=512,
+            context_length=30,
             attn_dropout=0.1,
             output_dropout=0.1,
             ffw_hidden_dim=2048,
             ffw_dropout=0.1,
             num_heads=8,
-            num_encoder_layers=4,
-            num_decoder_layers=4,
+            num_encoder_layers=6,
+            num_decoder_layers=6,
             activation='relu',
         )
 
-        backbone_output_dim = enc_output_dim + self.input_obs_group_shapes['obs']['robot0_eef_pos'][0]  # Transformer输出与非图像模态拼接作为解码器输入
-
-        self.nets["mlp"] = MLP(
-            input_dim=backbone_output_dim,
-            output_dim=layer_dims[-1],
-            layer_dims=layer_dims[:-1],
-            layer_func=get_activation(layer_func),
-            activation=get_activation(activation),
-            output_activation=get_activation(activation), # make sure non-linearity is applied before decoder
-        )
-
+        # self.nets["mlp"] = MLP(
+        #     input_dim=backbone_output_dim,
+        #     output_dim=layer_dims[-1],
+        #     layer_dims=layer_dims[:-1],
+        #     layer_func=get_activation(layer_func),
+        #     activation=get_activation(activation),
+        #     output_activation=get_activation(activation), # make sure non-linearity is applied before decoder
+        # )
         self.nets["decoder"] = ObservationDecoder(
             decode_shapes=self.output_shapes,
-            input_feat_dim=layer_dims[-1],
+            input_feat_dim=layer_dims[-1]*10,
         )
 
-    def forward(self, return_latent=False, **inputs):
+        # 设置词表和词嵌入
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, 512))  # 任务标记
+        nn.init.normal_(self.cls_token, std=0.02) # 对vit中的patch使用和cls token不同标准差的初始化
+        # 用于可视化注意力权重的计数器
+        self.counter = 0
+        self.label = 0
+
+    def forward(self, return_latent=False, return_attention_weights=False, fill_mode: str=None, **inputs):
         """
         模型的底层前向传播函数
         """
-        enc_outputs = self.nets["encoder"].forward(**inputs)
-        backbone_outputs = self.nets['backbone'].forward(enc_outputs)
-        # 拼接非图像模态作为Transformer的输入
-        # cat_outputs = torch.cat([
-        #     backbone_outputs,
-        #     inputs['obs']['robot0_eef_pos'],
-        # ], dim=-1)
-        cat_outputs = torch.cat([
-            backbone_outputs,
-            inputs['obs']['robot0_eef_pos'].unsqueeze(0), # 补齐batch维度
-        ], dim=-1)
-        mlp_outputs = self.nets["mlp"].forward(cat_outputs)
-        dec_outputs = self.nets["decoder"].forward(mlp_outputs)
+        
+        # 准备class embedding
+        cls_embed = self.cls_token # (1, 1, hidden_dim)
+        cls_embed = cls_embed.repeat(32, 1, 1) # (bs, 1, hidden_dim)
 
-        if return_latent:
-            return dec_outputs, backbone_outputs.detach(), enc_outputs.detach()
+        enc_outputs_dict = self.nets["encoder"].forward(**inputs)
+
+        obs = enc_outputs_dict['obs']
+        enc_inputs = {
+            # 'robot0_eef_pos': obs['robot0_eef_pos'],
+            'cls': cls_embed,
+            'agentview_image': obs['agentview_image'],
+            'agentview_depth': obs['agentview_depth']
+        }
+
+        dec_inputs = {
+            # 'text': cls_embed,
+            'robot0_eef_pos_step_traj_current': obs['robot0_eef_pos_step_traj_current'],
+            # 'robot0_eef_pos_past_traj_delta': obs['robot0_eef_pos_past_traj_delta']
+        }
+
+        self.nets['backbone'].enable_attention_storage()
+
+        if return_attention_weights:
+            backbone_outputs, attention_weights = self.nets['backbone'].forward(enc_inputs, dec_inputs, return_attention_weights=return_attention_weights, fill_mode=fill_mode)
+        else:
+            backbone_outputs = self.nets['backbone'].forward(enc_inputs, dec_inputs, return_attention_weights=return_attention_weights, fill_mode=fill_mode)
+        
+        self.counter += 1
+        if self.counter >= 1000 and return_attention_weights:
+            self.counter = 0
+            self.label += 1
+
+            layer_idx = 0
+            print("\n")
+            print(f"可视化第{layer_idx}层的注意力流...")
+            encoder_attn = attention_weights['encoder'][layer_idx]['self_attention'] if attention_weights['encoder'] else None
+            decoder_self_attn = attention_weights['decoder'][layer_idx]['self_attention'] if attention_weights['decoder'] else None
+            decoder_cross_attn = attention_weights['decoder'][layer_idx].get('cross_attention', None) if attention_weights['decoder'] else None
+
+            self.nets['backbone'].visualizer.plot_attention_flow(
+                encoder_attention=encoder_attn,
+                decoder_self_attention=decoder_self_attn,
+                decoder_cross_attention=decoder_cross_attn,
+                layer_idx=layer_idx,
+                save_path=f'./transformer/attention{self.label}/attention_flow_layer{layer_idx}.png',
+                show=False
+            )
+            self.nets['backbone'].visualizer.save_attention_statistics(
+                attention_weights,
+                save_path=f'./transformer/attention{self.label}/attention_statistics{layer_idx}.json'
+            )
+        self.nets['backbone'].disable_attention_storage()
+
+        backbone_outputs = backbone_outputs.flatten(start_dim=1)
+
+        dec_outputs = self.nets["decoder"].forward(backbone_outputs)
+
+        if return_latent and not return_attention_weights:
+            return dec_outputs, backbone_outputs.detach()
+        elif return_latent and return_attention_weights:
+            return dec_outputs, backbone_outputs.detach(), attention_weights
+        elif not return_latent and return_attention_weights:
+            return dec_outputs, attention_weights
+
         return dec_outputs
 
     def output_shape(self, input_shape=None):
@@ -829,7 +894,7 @@ class MIMO_MLP(Module):
             msg += textwrap.indent("\n" + self._to_string() + "\n", indent)
         msg += textwrap.indent("\nencoder={}".format(self.nets["encoder"]), indent)
         msg += textwrap.indent("\n\nbackbone={}".format(self.nets["backbone"]), indent)
-        msg += textwrap.indent("\n\nmlp={}".format(self.nets["mlp"]), indent)
+        # msg += textwrap.indent("\n\nmlp={}".format(self.nets["mlp"]), indent)
         msg += textwrap.indent("\n\ndecoder={}".format(self.nets["decoder"]), indent)
         msg = header + '(' + msg + '\n)'
         return msg

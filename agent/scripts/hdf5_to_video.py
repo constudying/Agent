@@ -216,7 +216,7 @@ def main():
                         help='视频帧率 (默认: 30)')
     parser.add_argument('--frame_skip', type=int, default=1,
                         help='跳帧数量，用于加速视频 (默认: 1，不跳帧)')
-    parser.add_argument('--use_opencv', action='store_true',
+    parser.add_argument('--use_opencv', action='store_true', # 该参数不推荐使用
                         help='使用OpenCV而不是FFmpeg（FFmpeg是默认且推荐的）')
     parser.add_argument('--list', action='store_true',
                         help='列出HDF5文件中所有可用的demos和图片类型')
