@@ -1,8 +1,10 @@
 import math
 import os
 
+import einops
+import numpy as np
 import torch
-import torch.nn as nn
+from torch import Tensor, nn
 import torch.nn.functional as F
 
 from agent.models.base_nets import get_activation
@@ -1187,7 +1189,7 @@ class CausalTransformerBlock(Module):
         return list(input_shape)
 
 
-class TransformerEncoderLayer(Module):
+class TransformerEncoderLayer(nn.Module):
     """
     Transformer编码器的单层实现
     """
@@ -1252,7 +1254,7 @@ class TransformerEncoderLayer(Module):
         return list(input_shape)
 
 
-class TransformerDecoderLayer(Module):
+class TransformerDecoderLayer(nn.Module):
     """
     Transformer 解码器的单层实现（pre-norm）
 
@@ -1371,7 +1373,7 @@ class Transformer(Module):
     # 添加位置编码器配置：编码器融合场景特征，解码器条件特征
     self.encoder_position_config = {
         # 'text': {'type': '1d', 'max_len': 10, 'dim': 512},  # 任务文本维度
-        'cls': {'type': '1d', 'max_len': 1, 'dim': 512},  # 全局信息标记维度
+        'cls': {'type': '1d', 'max_len': 3, 'dim': 512},  # 全局信息标记维度
         # 'robot0_eef_pos': {'type': '1d', 'max_len': 1, 'dim': 512},  # 位置维度
         # 'joint': {'type': '1d', 'max_len': 1, 'dim': 512},  # 关节维度
         'agentview_image': {'type': '2d', 'temporal_dim': 1, 'height': 3, 'width': 3, 'dim': 512, 'spatial_encoding_type': 'learned'},  # 图像维度
@@ -1379,9 +1381,26 @@ class Transformer(Module):
     }
     self.decoder_position_config = {
         # 'text': {'type': '1d', 'max_len': 10, 'dim': 512},  # 任务文本维度
+        # 'cls': {'type': '1d', 'max_len': 3, 'dim': 512},  # 动作序列标记
         'robot0_eef_pos_step_traj_current': {'type': '1d', 'max_len': 10, 'dim': 512},  # 轨迹特征维度
         # 'robot0_eef_pos_past_traj_delta': {'type': '1d', 'max_len': 9, 'dim': 512},  # 轨迹变化特征维度
     }
+    # self.cls_input_image_depth = nn.Embedding(1, 512)
+    # cls_input_image_depth = self.cls_input_image_depth.weight
+    # self.cls_token_image_depth = cls_input_image_depth.repeat(3, 1)
+
+    # self.cls_input_pos_traj = nn.Embedding(1, 512)
+    # cls_input_pos_traj = self.cls_input_pos_traj.weight
+    # self.cls_token_pos_traj = cls_input_pos_traj.repeat(3, 1)
+    # self.register_buffer(
+    #     "image_depth_encoder_pos_enc",
+    #     create_sinusoidal_pos_embedding(3, 512).unsqueeze(0),  # [1, 3, 512]
+    # )
+    # self.encoder_cam_feat_pos_embed = ACTSinusoidalPositionEmbedding2d(512 // 2)
+    # self.register_buffer(
+    #     "pos_traj_decoder_pos_enc",
+    #     create_sinusoidal_pos_embedding(3+10, 512).unsqueeze(0),
+    # )
     # 创建嵌入层
     self.encoder_embedder = MultiModalEmbedding(
         modality_configs=self.encoder_position_config,
@@ -1441,10 +1460,10 @@ class Transformer(Module):
     self._reset_parameters()
 
   def _reset_parameters(self):
-    for p in self.parameters():
-      if p.dim() > 1:
-        nn.init.xavier_uniform_(p)
-      
+      for p in self.nets.parameters():
+        if p.dim() > 1:
+          nn.init.xavier_uniform_(p)
+
   def forward(self, enc, dec, return_attention_weights=False, fill_mode: str=None):
     """
     Transformer 编解码器前向计算
@@ -1574,7 +1593,7 @@ class Transformer(Module):
         return decoder_output, attention_weights
     
     return decoder_output
-  
+
   def get_attention_weights(self):
     """
     收集所有层的注意力权重
@@ -1645,6 +1664,9 @@ class Transformer(Module):
   
   def output_shape(self, input_shape=None):
     return list(input_shape)
+
+
+
 
 
 class AttentionVisualizer:

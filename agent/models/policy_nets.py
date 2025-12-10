@@ -312,6 +312,7 @@ class ActorNetwork(MIMO_MLP):
     """
     def __init__(
         self,
+        device,
         obs_shapes,
         ac_dim,
         mlp_layer_dims,
@@ -366,6 +367,7 @@ class ActorNetwork(MIMO_MLP):
 
         output_shapes = self._get_output_shapes()
         super(ActorNetwork, self).__init__(
+            device=device,
             input_obs_group_shapes=observation_group_shapes,
             output_shapes=output_shapes,
             layer_dims=mlp_layer_dims,
@@ -399,6 +401,7 @@ class GMMActorNetwork(ActorNetwork):
     """
     def __init__(
         self,
+        device,
         obs_shapes,
         ac_dim,
         mlp_layer_dims,
@@ -426,6 +429,7 @@ class GMMActorNetwork(ActorNetwork):
         self.std_activation = std_activation
 
         super(GMMActorNetwork, self).__init__(
+            device=device,
             obs_shapes=obs_shapes,
             ac_dim=ac_dim,
             mlp_layer_dims=mlp_layer_dims,
@@ -445,35 +449,15 @@ class GMMActorNetwork(ActorNetwork):
         if return_latent and not return_attention_weights:
             out, back_out = MIMO_MLP.forward(self, return_latent=return_latent, obs=obs_dict, goal=goal_dict, fill_mode=fill_mode)
         elif return_attention_weights and not return_latent:
-            out, attention_weights = MIMO_MLP.forward(self, return_attention_weights=return_attention_weights, obs=obs_dict, goal=goal_dict, fill_mode=fill_mode)
+            out, img_feat = MIMO_MLP.forward(self, return_attention_weights=return_attention_weights, obs=obs_dict, goal=goal_dict, fill_mode=fill_mode)
         elif return_latent and return_attention_weights:
-            out, back_out, attention_weights = MIMO_MLP.forward(self, return_latent=return_latent, return_attention_weights=return_attention_weights, obs=obs_dict, goal=goal_dict, fill_mode=fill_mode)
+            out, img_feat, back_out = MIMO_MLP.forward(self, return_latent=return_latent, return_attention_weights=return_attention_weights, obs=obs_dict, goal=goal_dict, fill_mode=fill_mode)
         else:
             out = MIMO_MLP.forward(self, return_latent=return_latent, obs=obs_dict, goal=goal_dict, fill_mode=fill_mode)
 
         means = out["mean"]
         scales = out["scale"]
         logits = out["logits"]
-
-        # 计算注意力分布的熵
-        if return_attention_weights:
-            total_loss = 0.0
-            for layer_idx in range(4, 6):
-                cross_attn = attention_weights['decoder'][layer_idx]['cross_attention']
-                # 熵正则化：鼓励注意力分布更均匀，避免过度集中在某几个位置
-                entropy = -torch.sum(cross_attn * torch.log(cross_attn + 1e-9), dim=-1).mean()
-                # 最大值正则化：防止单个位置占主导
-                max_attn = cross_attn.max(dim=-1)[0].mean()
-                # 方差正则化：鼓励不同头关注不同位置
-                head_variance = cross_attn.var(dim=-1).mean()
-                # 组合损失
-                layer_loss = (
-                    -entropy * 0.5 + # 高熵好（负号）
-                    max_attn * 0.3 + # 低最大值好
-                    -head_variance * 0.2 # 高方差好（头的多样性）
-                )
-                total_loss += layer_loss
-            entropy_loss = total_loss / 2.0  # 平均损失
 
         if not self.use_tanh:
             means = torch.tanh(means)
@@ -499,11 +483,11 @@ class GMMActorNetwork(ActorNetwork):
         if return_latent and not return_attention_weights:
             return dist, back_out
         elif return_attention_weights and not return_latent:
-            return dist, entropy_loss
+            return dist, img_feat
         elif return_latent and return_attention_weights:
-            return dist, back_out, entropy_loss
-
-        return dist
+            return dist, img_feat, back_out
+        else:
+            return dist
     
     def forward(self, obs_dict, goal_dict=None):
         """

@@ -2,6 +2,7 @@ from collections import OrderedDict
 
 import copy
 import h5py
+import json
 import numpy as np
 import torch
 import torch.nn as nn
@@ -14,6 +15,7 @@ import robomimic.utils.obs_utils as ObsUtils
 import agent.utils.file_utils as FileUtils
 from agent.algo import register_algo_factory_func, PolicyAlgo
 from agent.models.GPT import GPT_wrapper
+# from agent.utils.normalize import Normalize, Unnormalize
 
 
 @register_algo_factory_func("agent")
@@ -548,6 +550,7 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         self.nets = nn.ModuleDict()
 
         self.nets["policy"] = PolicyNets.GMMActorNetwork(
+            device=self.device,
             obs_shapes=self.obs_shapes,
             goal_shapes=self.goal_shapes,
             ac_dim=self.ac_dim,
@@ -563,11 +566,37 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
 
         self.nets = self.nets.float().to(self.device)
 
+    @staticmethod
+    def load_obs_normalization_stats(stats_path):
+        """
+        从JSON文件加载观测归一化统计信息
+        
+        Args:
+            stats_path (str): JSON统计文件路径
+            
+        Returns:
+            dict: 包含每个模态的mean和std的字典
+        """
+        with open(stats_path, 'r') as f:
+            stats = json.load(f)
+        
+        obs_normalization_stats = {}
+        for key, value in stats.items():
+            obs_normalization_stats[key] = {
+                'mean': np.array(value['mean'], dtype=np.float32),
+                'std': np.array(value['std'], dtype=np.float32)
+            }
+        
+        return obs_normalization_stats
+
     def postprocess_batch_for_training(self, batch, obs_normalization_stats):
+
+        stats_file_path = '/home/lsy/cjh/project1/Agent/agent/datasets/playdata/image_demo_local_depth_step_obs_stats_with_images.json'
+        obs_normalization_stats = self.load_obs_normalization_stats(stats_file_path)
 
         obs_normalization_stats = TensorUtils.to_float(
             TensorUtils.to_device(TensorUtils.to_tensor(obs_normalization_stats), self.device))
-        
+
         obs_keys = ["obs", "next_obs", "goal_obs"]
 
         def recurse_helper(d):
@@ -577,11 +606,15 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
                         d[k] = ObsUtils.process_obs_dict(d[k])
                         if obs_normalization_stats is not None:
                             d[k] = ObsUtils.normalize_obs(d[k], obs_normalization_stats=obs_normalization_stats)
+
                 elif isinstance(d[k], dict):
                     recurse_helper(d[k])
-        
-        recurse_helper(batch)
-        batch["goal_obs"]["agentview_image"] = batch["goal_obs"]["agentview_image"][:, 0]
+            
+            return d
+
+        batch = recurse_helper(batch)
+
+        batch["obs"]["agentview_image"] = batch["goal_obs"]["agentview_image"][:, 0]
 
         # Reshape trajectory from [seq, gap*3] to [seq, gap, 3]
         # if 'robot0_eef_pos_past_traj' in batch['obs']:
@@ -613,7 +646,7 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         """
         with TorchUtils.maybe_no_grad(no_grad=validate):
             info = super(Highlevel_GMM_pretrain, self).train_on_batch(batch, epoch, validate=validate)
-            predictions = self._forward_training(batch, epoch)
+            predictions, img_feat = self._forward_training(batch, epoch)
             losses = self._compute_losses(predictions, batch)
 
             info["predictions"] = TensorUtils.detach(predictions)
@@ -623,7 +656,7 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
                 step_info = self._train_step(losses)
                 info.update(step_info)
         
-        return info
+        return info, img_feat
 
     def _get_latent_plan(self, obs, goal):
         """
@@ -730,7 +763,7 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         #         )
         #         batch['obs']['robot0_eef_pos_step_traj_current'] = mixed_input
 
-        dists, entropy_loss = self.nets["policy"].forward_train(
+        dists, img_feat = self.nets["policy"].forward_train(
             obs_dict=batch["obs"],
             goal_dict=batch["goal_obs"],
             fill_mode='sliding_window',
@@ -761,7 +794,6 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         if self._diagnostic_counter % 1000 == 1:
             print(f"\n[Iter {self._diagnostic_counter}] Training Diagnostics:")
             print(f"  Log prob: {log_probs.mean().item():.2f} (higher is better)")
-            print(f"  Entropy: {entropy_loss.item():.4f}")
             
             # 检查预测质量
             # 获取模态权重和每个模态的均值
@@ -804,9 +836,8 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
 
         predictions = OrderedDict(
             log_probs=log_probs,
-            entropy=entropy_loss,
         )
-        return predictions
+        return predictions, img_feat
     
     def _compute_losses(self, predictions, batch):
         """
@@ -815,9 +846,40 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         action_loss = -predictions["log_probs"].mean()
         return OrderedDict(
             log_probs = -action_loss,
-            entropy = predictions["entropy"],
             action_loss = action_loss,
         )
+
+    def check_optimizer_state_device(self, optimizer, name="optimizer"):
+        """检查优化器状态的设备"""
+        print(f"\n=== Checking {name} State Devices ===")
+        cpu_states = []
+        
+        for group_idx, group in enumerate(optimizer.param):
+            for param_idx, param in enumerate(group['params']):
+                if param in optimizer.state:
+                    state = optimizer.state[param]
+                    for key, value in state.items():
+                        if isinstance(value, torch.Tensor):
+                            if value.device.type == 'cpu':
+                                cpu_states.append({
+                                    'group': group_idx,
+                                    'param': param_idx,
+                                    'state_key': key,
+                                    'device': value.device,
+                                    'shape': value.shape
+                                })
+                                print(f"❌ CPU Tensor found!")
+                                print(f"   Group {group_idx}, Param {param_idx}")
+                                print(f"   State: {key}")
+                                print(f"   Shape: {value.shape}")
+                                print(f"   Param device: {param.device}")
+                                print(f"   Param shape: {param.shape}")
+        
+        if not cpu_states:
+            print("✓ All optimizer states are on GPU")
+        else:
+            print(f"\n❌ Found {len(cpu_states)} tensors on CPU!")
+        print("=" * 50)
 
     def _train_step(self, losses):
         """
@@ -825,10 +887,13 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         """
         # gradient step
         info = OrderedDict()
+        # 在 _train_step 方法中，backprop_for_loss 调用之前：
+        # cpu_states = self.check_optimizer_state_device(self.nets["policy"], "policy")
+
         policy_grad_norms = TorchUtils.backprop_for_loss(
             net=self.nets["policy"],
             optim=self.optimizers["policy"],
-            loss=losses["action_loss"] + losses["entropy"],
+            loss=losses["action_loss"],
             # max_grad_norm=10.0,
         )
         info["policy_grad_norms"] = policy_grad_norms
