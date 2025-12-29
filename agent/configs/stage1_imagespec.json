@@ -99,7 +99,7 @@
     },
     "highlevel": {
       "enabled": true,
-      "ac_dim": 30,
+      "ac_dim": 3,
       "latent_plan_dim": 400
     },
     "lowlevel": {
@@ -131,9 +131,8 @@
     "modalities": {
       "obs": {
         "low_dim": [
-          "robot0_eef_pos",
-          "robot0_eef_pos_step_traj_current",
-          "robot0_eef_pos_step_traj_future"
+          "robot0_eef_pos_past_traj",
+          "robot0_eef_pos_future_traj"
         ],
         "rgb": [
           "agentview_image"
@@ -152,19 +151,16 @@
     },
     "encoder": {
       "low_dim": {
-        "core_class": "AgentProjectCore",
-        "core_kwargs": {
-          "output_dimension": 512,
-          "activation": null
-        },
+        "core_class": null,
+        "core_kwargs": {},
         "obs_randomizer_class": null,
         "obs_randomizer_kwargs": {}
       },
       "rgb": {
         "core_class": "AgentVisualCore",
         "core_kwargs": {
-          "feature_dimension": null,
-          "flatten": false,
+          "feature_dimension": 64,
+          "flatten": true,
           "backbone_class": "ResNet18Conv",
           "backbone_kwargs": {
             "pretrained": false,
@@ -190,8 +186,8 @@
       "depth": {
         "core_class": "AgentVisualCore",
         "core_kwargs": {
-          "feature_dimension": null,
-          "flatten": false,
+          "feature_dimension": 64,
+          "flatten": true,
           "backbone_class": "ResNet18Conv",
           "backbone_kwargs": {
             "pretrained": false,

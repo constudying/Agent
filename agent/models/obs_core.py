@@ -21,11 +21,12 @@ class AgentVisualCore(EncoderCore, BaseNets.ConvBase):
     def __init__(
         self,
         input_shape,
-        backbone_class="ResNetFiLM", # NOTE: backbone class must be provided
+        backbone_class="ResNet18Conv", # NOTE: backbone class must be provided
+        pool_class="SpatialSoftmax",
         backbone_kwargs=None,
         pool_kwargs=None,
-        flatten=None,
-        feature_dimension=None,
+        flatten=True,
+        feature_dimension=64,
     ):
         super(AgentVisualCore, self).__init__(input_shape=input_shape)
         assert backbone_class is not None and backbone_kwargs is not None, "VisualCore: @backbone has not been provided yet."
@@ -53,21 +54,34 @@ class AgentVisualCore(EncoderCore, BaseNets.ConvBase):
         feat_shape = self.backbone.output_shape(input_shape)
         net_list = [self.backbone]
 
-        if pool_kwargs is not None:
+        if pool_class is not None:
+            # assert isinstance(pool_class, str)
+            # # feed output shape of backbone to pool net
+            # if pool_kwargs is None:
+            #     pool_kwargs = dict()
+            # # extract only relevant kwargs for this specific backbone
+            # pool_kwargs["input_shape"] = feat_shape
+            # pool_kwargs = extract_class_init_kwargs_from_dict(cls=eval(pool_class), dic=pool_kwargs, copy=True)
+            # self.pool = eval(pool_class)(**pool_kwargs)
+            # assert isinstance(self.pool, BaseNets.Module)
+
+            # feat_shape = self.pool.output_shape(feat_shape)
+            # net_list.append(self.pool)
             self.pool = None
         else:
             self.pool = None
         
         self.flatten = flatten
         if self.flatten:
-            net_list.append(torch.nn.Flatten(start_dim=1, end_dim=-1))
+            # net_list.append(torch.nn.Flatten(start_dim=1, end_dim=-1))
+            pass
         
         # maybe linear layer
         self.feature_dimension = feature_dimension
         if feature_dimension is not None:
             assert self.flatten, "VisualCore: @feature_dimension requires @flatten=True"
             linear = torch.nn.Linear(int(np.prod(feat_shape)), self.feature_dimension)
-            net_list.append(linear)
+            # net_list.append(linear)
         
         self.nets = nn.Sequential(*net_list)
 

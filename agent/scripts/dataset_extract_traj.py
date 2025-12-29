@@ -46,7 +46,7 @@ def get_step_trajectory(pos, vel):
     step_traj_current = []
     step_traj_future = []
     total_points = len(pos)
-    time_gap = 10  # 每个时间步长包含的点数
+    time_gap = 30  # 每个时间步长包含的点数
     point_gap = 1  # 点之间的间隔
 
     for step in range(total_points):

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 import os
 import numpy as np
@@ -60,7 +62,12 @@ def obs_encoder_factory(
     # NOTE: 需要在这里登记所有使用到的 obs key 的shape
     # obs_shapes['robot0_eef_pos_past_traj'] = [10, 3]
     # obs_shapes['robot0_eef_pos_past_traj_delta'] = [9, 3]
-    obs_shapes['robot0_eef_pos_step_traj_current'] = [10, 3]
+    obs_shapes['robot0_eef_pos_past_traj'] = [10, 3]
+    # obs_shapes['robot0_eef_vel_ang_past_traj'] = [10, 3]
+    # obs_shapes['robot0_eef_vel_lin_past_traj'] = [10, 3]
+    obs_shapes['robot0_action_past_traj'] = [10, 7]
+    obs_shapes['robot0_action_future_traj'] = [10, 7]
+    obs_shapes['robot0_joint_pos_past_traj'] = [10, 7]
 
 
     for k, obs_shape in obs_shapes.items():
@@ -219,6 +226,7 @@ class ObservationEncoder(Module):
         Returns:
             feats (torch.Tensor): flat features of shape [B, D]
         """
+
         assert self._locked, "ObservationEncoder: @make has not been called yet"
 
         # ensure all modalities that the encoder handles are present
@@ -228,9 +236,11 @@ class ObservationEncoder(Module):
         # process modalities by order given by @self.obs_shapes
         feats_dict = OrderedDict()
         for k in self.obs_shapes:
+
             x = obs_dict[k]
 
-            # # maybe process encoder input with randomizer
+            # maybe process encoder input with randomizer
+            # depth: false; image: true
             # if self.obs_randomizers[k] is not None:
             #     x = self.obs_randomizers[k].forward_in(x)
 
@@ -244,6 +254,7 @@ class ObservationEncoder(Module):
                 x = x.reshape(b * t, *x.shape[2:])
 
               x = self.obs_nets[k](x)
+              # all is true: self.activation=ReLU
               # if self.activation is not None:
               #     x = self.activation(x)
 
@@ -257,10 +268,11 @@ class ObservationEncoder(Module):
                     # x = x.reshape(b, x.shape[1] * x.shape[2] * x.shape[3], x.shape[4])
                 has_extra_dim = False
 
-            # # maybe process encoder output with randomizer
+            # maybe process encoder output with randomizer
+            # depth: false; image: true
             # if self.obs_randomizers[k] is not None:
             #     x = self.obs_randomizers[k].forward_out(x)
-            # # flatten to [B, D]
+            # flatten to [B, D]
             # x = TensorUtils.flatten(x, begin_axis=1)
             feats_dict[k] = x
 
@@ -470,7 +482,7 @@ class ObservationDecoder(Module):
         output = {}
         for k in self.obs_shapes:
             out = self.nets[k](feats)
-            output[k] = out.reshape(-1, *self.obs_shapes[k])
+            output[k] = out  # .reshape(-1, *self.obs_shapes[k])
         return output
 
     def __repr__(self):
@@ -773,109 +785,235 @@ class MIMO_MLP(Module):
         self.input_obs_group_shapes = input_obs_group_shapes
         self.output_shapes = output_shapes
 
-        self.nets = nn.ModuleDict()
-        self.nets["pre_encoder"] = ObservationGroupEncoder(
+        # self.nets = nn.ModuleDict()
+
+        self.pre_encoder = ObservationGroupEncoder(
             observation_group_shapes=input_obs_group_shapes,
             encoder_kwargs=encoder_kwargs,
         )
 
-        # self.nets['backbone'] = Transformer(#HumanRobotCoupledInterACT(
-        #     embed_dim=512,
-        #     context_length=30,
-        #     attn_dropout=0.1,
-        #     output_dropout=0.1,
-        #     ffw_hidden_dim=2048,
-        #     ffw_dropout=0.1,
-        #     num_heads=8,
-        #     num_encoder_layers=6,
-        #     num_decoder_layers=6,
-        #     activation='relu',
+        # self.past_traj_encoder = PastTrajEncoder(
+        #     input_dim=9,
+        #     dim_feedforward=[256],
+        #     output_dim=512,
+        #     dropout=[0.1],
+        #     feedforward_activation="relu",
         # )
 
-        self.nets['backbone_encoder'] = IDCEncoder(
-            num_blocks=3,
-            num_cls_tokens_traj=3,
-            num_cls_tokens_image=3,
-            num_cls_tokens_depth=3,
-            dim_model=512,
-            n_heads=8,
-            dim_feedforward=3200,
-            dropout=0.1,
-            feedforward_activation="relu",
-            pre_norm=True,
-        )
-        self.nets['backbone_decoder'] = TrajectoryDecoder(
-            num_cls_tokens_traj=3,
-            num_cls_tokens_image=3,
-            num_cls_tokens_depth=3,
-            n_pre_decoder_layers=2,
-            n_post_decoder_layers=2,
-            n_sync_decoder_layers=1,
-            dim_model=512,
-            n_heads=8,
-            dim_feedforward=3200,
-            dropout=0.1,
-            feedforward_activation="relu",
-            pre_norm=True,
-        )
-        # self.nets["mlp"] = MLP(
-        #     input_dim=backbone_output_dim,
-        #     output_dim=layer_dims[-1],
-        #     layer_dims=layer_dims[:-1],
-        #     layer_func=get_activation(layer_func),
-        #     activation=get_activation(activation),
-        #     output_activation=get_activation(activation), # make sure non-linearity is applied before decoder
+        # self.past_traj_proj = PastTrajEncoder(
+        #     input_dim=3,
+        #     dim_feedforward=[],
+        #     output_dim=512,
+        #     # dropout=[0.1],
+        #     feedforward_activation="relu",
         # )
-        self.nets["decoder"] = ObservationDecoder(
-            decode_shapes=self.output_shapes,
-            input_feat_dim=layer_dims[-1]*10,
-        )
+
+        # self.traj_query_encoder = TrajQueryEncoder(
+        #     in_channels=512+128,
+        #     out_channels=1,
+        #     activation="relu",
+        # )
+
+        # self.sub_target_decoder_coarse = CoarseTargetDecoder(
+        #     input_dim = 128,
+        #     dim_feedforward = [1024],
+        #     output_dim = 512,
+        #     dropout = [0.1],
+        #     feedforward_activation = "relu",
+        # )
+
+        # self.sub_target_decoder_residual = ResidualTargetDecoder(
+        #     n_decoder_layers = 3,
+        #     dim_model = 512,
+        #     n_heads = 8,
+        #     dim_feedforward = 2048,
+        #     dropout = 0.1,
+        #     feedforward_activation = "relu",
+        #     pre_norm = True,
+        # )
+        # self.sub_target_decoder = SubTargetDecoder(
+        #     n_decoder_layers=3,
+        #     dim_model=512,
+        #     n_heads=8,
+        #     dim_feedforward=2048,
+        #     dropout=0.1,
+        #     feedforward_activation="relu",
+        #     pre_norm=True,
+        # )
+
+        # self.sub_segment_decoder = SubSegmentDecoder(
+        #     n_decoder_layers=3,
+        #     dim_model=512,
+        #     n_heads=8,
+        #     dim_feedforward=2048,
+        #     dropout=0.1,
+        #     feedforward_activation="relu",
+        #     pre_norm=True,
+        # )
+
+        # self.fusion_proj = nn.Linear(512 * 2, 512)
+
+        # self.gmm_head = ObservationDecoder(
+        #     decode_shapes=self.output_shapes,
+        #     input_feat_dim=512  # layer_dims[-1],
+        # )
 
         # 设置词表和词嵌入
-        self.cls_input_traj = nn.Embedding(1, 512).to(device)
-        cls_input_traj = self.cls_input_traj.weight
-        self.cls_token_traj = cls_input_traj.repeat(3, 1)
-        num_robot_input_token_encoder = 3 + 10
+        # self.cls_input_seg1 = nn.Embedding(1, 512).to(device)
+        # self.cls_input_seg2 = nn.Embedding(1, 128).to(device)
+        # self.cls_input_seg3 = nn.Embedding(1, 128).to(device)
+        # self.cls_input_seg4 = nn.Embedding(1, 128).to(device)
+        # self.cls_input_seg5 = nn.Embedding(1, 128).to(device)
+        
+        # cls_token_seg1 = self.cls_input_seg1.weight
+        # self.cls_token_seg1 = cls_token_seg1.repeat(32, 1) # [B, D]
+        # cls_token_seg2 = self.cls_input_seg2.weight
+        # self.cls_token_seg2 = cls_token_seg2.repeat(32, 1) # [B, D]
+        # cls_token_seg3 = self.cls_input_seg3.weight
+        # self.cls_token_seg3 = cls_token_seg3.repeat(32, 1) # [B, D]
+        # cls_token_seg4 = self.cls_input_seg4.weight
+        # self.cls_token_seg4 = cls_token_seg4.repeat(32, 1) # [B, D]
+        # cls_token_seg5 = self.cls_input_seg5.weight
+        # self.cls_token_seg5 = cls_token_seg5.repeat(32, 1) # [B, D]
+
+        # self.register_buffer('time_scale', torch.tensor([0.5, 1.0]))
+        self.query_input_num = 7
         self.register_buffer(
-            'traj_encoder_pos_enc',
-            create_sinusoidal_pos_embedding(
-                num_robot_input_token_encoder,
-                512
-            ),
+            'sub_target_pos_enc',
+            create_sinusoidal_pos_embedding(self.query_input_num, 512).unsqueeze(1)
+        )
+        self.register_buffer(
+            'state_joint_pos_enc',
+            create_sinusoidal_pos_embedding(1, 512).unsqueeze(1)
+        )
+        # self.condition_mlp = MLP(
+        #     input_dim=9,  #mlp_input_dim,
+        #     output_dim=512,
+        #     layer_dims=[256],
+        #     layer_func=nn.Linear,
+        #     dropouts=[0.1],
+        #     activation=get_activation_fn("relu"),
+        #     output_activation=get_activation_fn("relu"), # make sure non-linearity is applied before decoder
+        # )
+
+        # self.query_embedding = nn.Embedding(3, 512)
+        
+        # self.query_to_history = CrossAttentionLayer(
+        #     n_layers = 3,
+        #     dim_model=512,
+        #     n_heads=8,
+        #     dropout=0.1,
+        #     pre_norm=True,
+        # )
+        # self.register_buffer(
+        #     'sub_segment_pos_enc',
+        #     create_sinusoidal_pos_embedding(3, 512).unsqueeze(1)
+        # )
+        self.encoder_image_feat_pos_embed = ACTSinusoidalPositionEmbedding2d(512 // 2)
+
+        # 深度图patch到像素中心点坐标的映射
+        original_h, original_w = 240, 240  # 原始深度图尺寸
+        patch_h, patch_w = 8, 8  # patch特征图尺寸
+        # 计算每个patch对应的原始图像区域大小
+        stride_h = original_h / patch_h  # 10.5
+        stride_w = original_w / patch_w  # 10.5
+        # 为每个patch计算其中心点在原始图像中的(u, v)坐标
+        patch_centers = []
+        for i in range(patch_h):
+            for j in range(patch_w):
+                # 计算patch中心点坐标 (u, v)
+                center_v = (i + 0.5) * stride_h  # 行坐标 (v)
+                center_u = (j + 0.5) * stride_w  # 列坐标 (u)
+                patch_centers.append([center_u, center_v])
+        # 转换为tensor并注册为buffer (不参与梯度计算)
+        self.register_buffer(
+            'depth_patch_centers',
+            torch.tensor(patch_centers, dtype=torch.float32)  # [64, 2]
         )
 
-        self.cls_input_image = nn.Embedding(1, 512).to(device)
-        cls_input_image = self.cls_input_image.weight
-        self.cls_token_image = cls_input_image.repeat(3, 1)
+        # 相机内参矩阵
+        self.fx = 289.7056274847714
+        self.fy = 289.7056274847714
+        self.cx = 120.0
+        self.cy = 120.0
+
+        # 相机外参矩阵 (World to Camera transformation)
         self.register_buffer(
-            "image_encoder_pos_enc",
-            create_sinusoidal_pos_embedding(
-                3,
-                512
-            ),
+            'extrinsics_matrix',
+            torch.tensor([
+          [0.0, -0.6282662749116676, 0.777998385479441, -1.2528497000568177],
+          [1.0, 0.0, 0.0, -0.658613],
+          [0.0, 0.777998385479441, 0.6282662749116676, -1.0117285958040039],
+          [0.0, 0.0, 0.0, 1.0]
+            ], dtype=torch.float32)
         )
-        self.cls_input_depth = nn.Embedding(1, 512).to(device)
-        cls_input_depth = self.cls_input_depth.weight
-        self.cls_token_depth = cls_input_depth.repeat(3, 1)
+        
+        # 相机位置 (World coordinates)
         self.register_buffer(
-            "depth_encoder_pos_enc",
-            create_sinusoidal_pos_embedding(
-                3,
-                512
-            ),
+            'camera_position',
+            torch.tensor([0.658613, 0.0, 1.61035], dtype=torch.float32)
         )
-        # 用于cls聚合的位置嵌入
+        
+        # 相机旋转矩阵 (World to Camera rotation)
         self.register_buffer(
-            'cls_encoder_pos_enc',
-            create_sinusoidal_pos_embedding(
-                3*3,
-                512
-            ),
+            'camera_rotation',
+            torch.tensor([
+          [0.0, -0.6282662749116676, 0.777998385479441],
+          [1.0, 0.0, 0.0],
+          [0.0, 0.777998385479441, 0.6282662749116676]
+            ], dtype=torch.float32)
         )
-        # 2d数据的位置嵌入
-        self.encoder_cam_feat_pos_embed = ACTSinusoidalPositionEmbedding2d(512 // 2)
-        # 用于未来轨迹解码器的位置嵌入，可学习的位置嵌入
-        self.decoder_pos_embed = nn.Embedding(10, 512).to(device)
+
+        self.rgb_film_mlp = MLP(
+            input_dim=3,  #mlp_input_dim,
+            output_dim=1024,
+            layer_dims=[512],
+            layer_func=nn.Linear,
+            dropouts=[0.1],
+            activation=get_activation_fn("relu"),
+            output_activation=get_activation_fn("relu"), # make sure non-linearity is applied before decoder
+        )
+        self.image_to_depth = CrossAttentionLayer(
+            n_layers = 3,
+            dim_model=512,
+            n_heads=8,
+            dropout=0.1,
+            pre_norm=True,
+        )
+        self.depth_to_image = CrossAttentionLayer(
+            n_layers = 3,
+            dim_model=512,
+            n_heads=8,
+            dropout=0.1,
+            pre_norm=True,
+        )
+
+        self.joint_pos_proj = nn.Linear(7, 512)
+        self.query_to_patch = nn.ModuleList(
+            SubTargetDecoderLayer(
+                dim_model = 512,
+                n_heads = 8,
+                dim_feedforward = 3200,
+                dropout = 0.1,
+                feedforward_activation = "relu",
+                pre_norm = True,
+            ) for _ in range(6)
+        )
+
+        self.image_norm_center = TokenNormCenter(512)
+        self.depth_norm_center = TokenNormCenter(512)
+        self.traj_q_norm_center = TokenNormCenter(512)
+        self.traj_kv_norm_center = TokenNormCenter(512)
+
+        # 门控系数
+        self.image_to_depth_a = nn.Parameter(torch.tensor(float(-6.0)))
+        self.depth_to_image_a = nn.Parameter(torch.tensor(float(-6.0)))
+        self.query_to_history_a = nn.Parameter(torch.tensor(float(-6.0)))
+        self.query_to_patch_a = nn.Parameter(torch.tensor(float(-6.0)))
+
+        self.action_proj = nn.Linear(512, 7)
+
+        self._reset_parameters()
 
         # 用于可视化注意力权重的计数器
         self.counter = 0
@@ -886,107 +1024,352 @@ class MIMO_MLP(Module):
             'decoder_attn': []
         }
 
-    def forward(self, return_latent=False, return_attention_weights=False, fill_mode: str=None, **inputs):
+    def _reset_parameters(self):
+        # for p in chain(self.sub_target_decoder_coarse.parameters(), self.sub_target_decoder_residual.parameters(), self.sub_segment_decoder.parameters()):
+        #     if p.dim() > 1:
+        #         nn.init.xavier_uniform_(p)
+        # for p in chain(self.past_traj_encoder.parameters(), self.traj_query_encoder.parameters()):
+        #     if p.dim() > 1:
+        #         nn.init.xavier_uniform_(p)
+        #         nn.init.zeros_(p)
+        for p in chain(self.image_to_depth.parameters(), self.depth_to_image.parameters(), self.query_to_patch.parameters()):
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+                nn.init.zeros_(p)
+
+        if hasattr(self, 'fusion_proj'):
+            nn.init.xavier_uniform_(self.fusion_proj.weight)
+            nn.init.zeros_(self.fusion_proj.bias)
+        # if hasattr(self.pre_encoder.nets.obs.obs_nets, 'robot0_eef_pos_step_traj_current'):
+        #     nn.init.xavier_uniform_(self.pre_encoder.nets.obs.obs_nets['robot0_eef_pos_step_traj_current'].proj_net.weight)
+        #     nn.init.zeros_(self.pre_encoder.nets.obs.obs_nets['robot0_eef_pos_step_traj_current'].proj_net.bias)
+        # if hasattr(self.gmm_head.nets, 'mean'):
+        #     nn.init.xavier_uniform_(self.gmm_head.nets['mean'].weight)
+        #     nn.init.zeros_(self.gmm_head.nets['mean'].bias)
+        # if hasattr(self.gmm_head.nets, 'scale'):
+        #     nn.init.xavier_uniform_(self.gmm_head.nets['scale'].weight)
+        #     nn.init.zeros_(self.gmm_head.nets['scale'].bias)
+        # if hasattr(self.gmm_head.nets, 'logits'):
+        #     nn.init.xavier_uniform_(self.gmm_head.nets['logits'].weight)
+            # nn.init.zeros_(self.gmm_head.nets['logits'].bias)
+        if hasattr(self, 'action_proj'):
+            nn.init.xavier_uniform_(self.action_proj.weight)
+            nn.init.zeros_(self.action_proj.bias)
+
+
+    def forward(self, return_latent=False, return_attention_weights=False, fill_mode: str=None, stage: str=None, **inputs):
         """
         模型的底层前向传播函数
         """
-
-        enc_outputs_dict = self.nets["pre_encoder"].forward(**inputs)
-
-        batch_size = enc_outputs_dict['obs']['agentview_image'].shape[0]
-
-        image_feat = enc_outputs_dict['obs']['agentview_image'] # 没有归一化
-        depth_feat = enc_outputs_dict['obs']['agentview_depth'] # 没有归一化
-        traj_feat = enc_outputs_dict['obs']['robot0_eef_pos_step_traj_current'] # 没有归一化
-
-        # # 利用深度图特征连续性，计算attention bias，引导注意力机制关注image图像特征区域
-        # depth_pos_embed = self.encoder_cam_feat_pos_embed(depth_feat)
-        # # 基于余弦相似度计算patch-level的depth特征attention bias
-        # _, _, h, w = depth_feat.shape
-        # num_patches = h * w
-        # depth_feat_flat = depth_feat.flatten(2).permute(0, 2, 1)  # [B, N, D]
+        # depth_feat shape: [B, C, H, W]
+        # depth_patch_centers shape: [64, 2] (u, v coordinates)
+        # 将像素坐标归一化到 [-1, 1] 范围，用于 grid_sample
+        # 原始图像尺寸
+        original_h, original_w = 240, 240
+        batch_size = inputs['obs']['agentview_depth'].shape[0]
+        # 归一化坐标: x = 2 * u / (W - 1) - 1, y = 2 * v / (H - 1) - 1
+        normalized_coords = self.depth_patch_centers.clone()
+        normalized_coords[:, 0] = 2.0 * normalized_coords[:, 0] / (original_w - 1) - 1.0  # u -> x
+        normalized_coords[:, 1] = 2.0 * normalized_coords[:, 1] / (original_h - 1) - 1.0  # v -> y
+        # 扩展到 batch 维度: [B, 64, 2]
+        grid = normalized_coords.unsqueeze(0).expand(batch_size, -1, -1)
+        # grid_sample 需要 [B, H, W, 2] 格式的 grid，这里我们只有 64 个点
+        # 因此需要 reshape: [B, 64, 2] -> [B, 8, 8, 2]
+        grid = grid.view(batch_size, 8, 8, 2)
+        # 对 depth_feat 进行双线性采样
+        # mode='bilinear', padding_mode='border', align_corners=True
+        sampled_depth = F.grid_sample(
+            inputs['obs']['agentview_depth'], 
+            grid, 
+            mode='bilinear', 
+            padding_mode='border', 
+            align_corners=True
+        )  # [B, C, 8, 8]
+        # 使用采样的深度值进行3D抬升
+        # sampled_depth shape: [B, 1, 8, 8]
+        depth_values = sampled_depth.squeeze(1)  # [B, 8, 8]
+        # 获取每个patch中心点的像素坐标
+        patch_centers_batch = self.depth_patch_centers.unsqueeze(0).expand(batch_size, -1, -1)  # [B, 64, 2]
+        u_coords = patch_centers_batch[:, :, 0].view(batch_size, 8, 8)  # [B, 8, 8]
+        v_coords = patch_centers_batch[:, :, 1].view(batch_size, 8, 8)  # [B, 8, 8]
+        # 3D抬升公式: X = (u - cx) * Z / fx, Y = (v - cy) * Z / fy (相机坐标系)
+        Z_cam = depth_values  # [B, 8, 8]
+        X_cam = (u_coords - self.cx) * Z_cam / self.fx  # [B, 8, 8]
+        Y_cam = (v_coords - self.cy) * Z_cam / self.fy  # [B, 8, 8]
+        # 将相机坐标转换为世界坐标
+        # 构建相机坐标齐次坐标 [B, 64, 4]
+        points_cam = torch.stack([X_cam, Y_cam, Z_cam], dim=1).view(batch_size, 3, -1)  # [B, 3, 64]
+        ones = torch.ones(batch_size, 1, 64, device=points_cam.device)
+        points_cam_homo = torch.cat([points_cam, ones], dim=1)  # [B, 4, 64]
+        # 使用相机外参的逆矩阵进行坐标变换: P_world = T^(-1) * P_cam
+        extrinsics_inv = torch.inverse(self.extrinsics_matrix)  # [4, 4]
+        extrinsics_inv_batch = extrinsics_inv.unsqueeze(0).expand(batch_size, -1, -1)  # [B, 4, 4]
+        points_world_homo = torch.bmm(extrinsics_inv_batch, points_cam_homo)  # [B, 4, 64]
         
-        cls_token_traj = self.cls_token_traj.unsqueeze(0).repeat(batch_size, 1, 1).to(traj_feat.device)  # [B, S, D]
+        # 提取世界坐标系下的3D坐标
+        X = points_world_homo[:, 0, :].view(batch_size, 8, 8)  # [B, 8, 8]
+        Y = points_world_homo[:, 1, :].view(batch_size, 8, 8)  # [B, 8, 8]
+        Z = points_world_homo[:, 2, :].view(batch_size, 8, 8)  # [B, 8, 8]
+        # 将3D坐标堆叠并展平为token序列
+        # points_3d shape: [B, 3, 8, 8] -> [B, 64, 3]
+        points_3d = torch.stack([X, Y, Z], dim=1)  # [B, 3, 8, 8]
+        points_3d = points_3d.view(batch_size, 3, -1).permute(0, 2, 1)  # [B, 64, 3]
 
-        encoder_in_token_traj = torch.cat([cls_token_traj, traj_feat], dim=1)  # [B, S+N, D]
+        # 图像和深度信息编码，并已经z-scores归一化所有输入
+        enc_outputs_dict = self.pre_encoder.forward(**inputs)
+        # 处理图像特征，获取位置编码
+        image_feat = enc_outputs_dict['obs']['agentview_image']
+        image_feat_pos_embed = self.encoder_image_feat_pos_embed(image_feat).to(dtype=image_feat.dtype)
+        # FiLM调制图像特征
+        gamma_raw, beta = self.rgb_film_mlp(points_3d).chunk(2, dim=-1)  # [B, 64, 512] each
+        gamma = 1.0 + 0.1 * F.tanh(gamma_raw)  # [B, 64, 512]
+        # 对image_feat进行FiLM调制
+        C, H, W = image_feat.shape[1], image_feat.shape[2], image_feat.shape[3]
+        image_feat = image_feat.view(batch_size, C, H * W).permute(0, 2, 1)  # [B, 64, C]
+        image_feat = image_feat * gamma + beta  # FiLM调制
 
-        traj_pos_embed = self.traj_encoder_pos_enc.unsqueeze(1)
 
-        cls_token_image = self.cls_token_image.unsqueeze(0).repeat(batch_size, 1, 1).to(image_feat.device)  # [B, S, D]
-        image_pos_embed = self.encoder_cam_feat_pos_embed(image_feat).to(dtype=image_feat.dtype)
-        all_image_pos_embed = torch.cat([self.image_encoder_pos_enc, einops.rearrange(image_pos_embed, 'b c h w -> b (h w) c')[0]], dim=0)
-        all_image_pos_embed = all_image_pos_embed.unsqueeze(1)
-        encoder_in_token_image = torch.cat([cls_token_image, einops.rearrange(image_feat, 'b c h w -> b (h w) c')], dim=1)  # [B, S+N, D]
+        # 计算token-token之间的3D欧氏距离矩阵
+        # points_3d: [B, 64, 3]
+        dist_3d = torch.cdist(points_3d, points_3d, p=2)  # [B, 64, 64]
 
+        # 构建KNN掩码 (例如k=8的最近邻)
+        k = 8
+        dist_masked = dist_3d.clone()
+        idx = torch.arange(64)
+        dist_masked[:, idx, idx] = float('inf')  # 排除自身距离
+        _, knn_indices = dist_masked.topk(k, dim=-1, largest=False)
 
-        cls_token_depth = self.cls_token_depth.unsqueeze(0).repeat(batch_size, 1, 1).to(depth_feat.device)  # [B, S, D]
-        depth_pos_embed = self.encoder_cam_feat_pos_embed(depth_feat).to(dtype=depth_feat.dtype)
-        all_depth_pos_embed = torch.cat([self.depth_encoder_pos_enc, einops.rearrange(depth_pos_embed, 'b c h w -> b (h w) c')[0]], dim=0)
-        all_depth_pos_embed = all_depth_pos_embed.unsqueeze(1)
-        encoder_in_token_depth = torch.cat([cls_token_depth, einops.rearrange(depth_feat, 'b c h w -> b (h w) c')], dim=1)  # [B, S+N, D]
-        
-        encoder_in_cls_pos_embed = self.cls_encoder_pos_enc.unsqueeze(1)
+        knn_mask = torch.zeros_like(dist_3d, dtype=torch.float32)  # [B, 64, 64]
+        knn_mask.scatter_(dim=2, index=knn_indices, src=torch.ones_like(knn_indices, dtype=torch.float32))  # 标记KNN位置为True
+        # knn_mask = torch.maximum(knn_mask, knn_mask.transpose(1, 2))  # 对称掩码
+        # knn_mask[:, idx, idx] = 0.0  # 对角线位置清零
 
-        encoder_out_image, encoder_out_depth, encoder_out_traj = self.nets['backbone_encoder'].forward(
-            segments_image=encoder_in_token_image,
-            pos_embed_image=all_image_pos_embed,
-            segments_depth=encoder_in_token_depth,
-            pos_embed_depth=all_depth_pos_embed,
-            segments_traj=encoder_in_token_traj,
-            pos_embed_traj=traj_pos_embed,
-            pos_embed_cls=encoder_in_cls_pos_embed
-        )  # [B, S_total, D]
+        # 几何正则
+        knn_d = dist_3d.gather(2, knn_indices)  # [B, 64, k]
+        sigma = knn_d.median(dim=-1).values.median(dim=-1).values  # [B]
+        sigma = sigma.clamp_min(1e-6)  # 防止除零
+        W = torch.exp(-(dist_3d**2) / (sigma[:, None, None]**2)) * knn_mask  # [B, 64, 64]
+        W[:, idx, idx] = 0.0  # 对角线位置清零
 
-        encoder_out_image_cls = encoder_out_image[:3, :, :]  # [B, 3, D]
-        encoder_out_depth_cls = encoder_out_depth[:3, :, :]  # [B, 3, D]
+        image_feat_norm = torch.nn.functional.layer_norm(image_feat, (512,))
+        diff2 = (image_feat_norm[:, :, None, :] - image_feat_norm[:, None, :, :]).pow(2).mean(dim=-1)  # [B, 64, 64]
+        L_geo = (W * diff2).sum() / W.sum().clamp_min(1)
+        # L_geo = (W[..., None] * (image_feat[:, :, None, :] - image_feat[:, None, :, :]).pow(2)).sum()
 
-        encoder_in_pos_embed_image_cls = all_image_pos_embed[:3, :, :]  # [B, 3, D]
-        encoder_in_pos_embed_depth_cls = all_depth_pos_embed[:3, :, :]  # [B, 3, D]
+        # 处理深度特征，实现跨模态注意力融合
+        depth_feat = enc_outputs_dict['obs']['agentview_depth']
+        # 图像和深度特征位置编码
+        depth_feat_pos_embed = self.encoder_image_feat_pos_embed(depth_feat).to(dtype=depth_feat.dtype)
+        depth_feat_pos_embed = einops.rearrange(depth_feat_pos_embed, 'B C H W -> (H W) B C')  # [N, B, D]
+        depth_feat = einops.rearrange(depth_feat, 'B C H W -> B (H W) C')  # [N, B, D]
+        # # token 去中心化
+        # image_feat = self.image_norm_center(image_feat)
+        # depth_feat = self.depth_norm_center(depth_feat)
 
-        encoder_out_traj_feat = encoder_out_traj[3:, :, :]  # [B, N, D]
+        image_feat = einops.rearrange(image_feat, 'B S C -> S B C')  # [N, B, D]
+        depth_feat = einops.rearrange(depth_feat, 'B S C -> S B C')  # [N, B, D]
+        image_feat_pos_embed = einops.rearrange(image_feat_pos_embed, 'B C H W -> (H W) B C')  # [N, B, D]
 
-        image_encoder_context = torch.cat([
-            encoder_out_image,
-            encoder_out_depth_cls,
-            # encoder_out_traj_feat
-        ], dim=0)  # [B, S_image+S_depth+S_traj, D]
+        cam_feat = torch.cat([image_feat, depth_feat], dim=-1)  # [N, B, 2D]
+        cam_feat = einops.rearrange(cam_feat, 'S B C -> B S C')  # [B, N, 2D]
 
-        image_encoder_pos = torch.cat([
-            all_image_pos_embed,
-            encoder_in_pos_embed_depth_cls,
-            # traj_pos_embed
-        ], dim=0)  # [B, S_image+S_depth+S_traj, D]
-
-        depth_encoder_context = torch.cat([
-            encoder_out_depth,
-            encoder_out_image_cls,
-            # encoder_out_traj
-        ], dim=0)  # [B, S_depth+S_image+S_traj, D]
-
-        depth_encoder_pos = torch.cat([
-            all_depth_pos_embed,
-            encoder_in_pos_embed_image_cls,
-            # traj_pos_embed
-        ], dim=0)  # [B, S_depth+S_image+S_traj, D]
-
-        decoder_in = torch.zeros(
-            (10, batch_size, 512),
-            dtype=encoder_out_image.dtype,
-            device=encoder_out_image.device,
+        image_to_depth_feat, _ = self.image_to_depth(
+            image_feat, depth_feat, image_feat_pos_embed, depth_feat_pos_embed
+        )
+        depth_to_image_feat, _ = self.depth_to_image(
+            depth_feat, image_feat, depth_feat_pos_embed, image_feat_pos_embed
         )
 
-        back_output = self.nets['backbone_decoder'].forward(
-            encoder_out_traj_feat,
-            image_encoder_context,
-            depth_encoder_context,
-            image_encoder_pos,
-            depth_encoder_pos,
-            self.decoder_pos_embed.weight.unsqueeze(1),
-        )  # [chunk_size, B, D]
+        image_feat_fused = torch.sigmoid(self.image_to_depth_a) * image_to_depth_feat + image_feat
+        depth_feat_fused = torch.sigmoid(self.depth_to_image_a) * depth_to_image_feat + depth_feat
 
-        back_output = einops.rearrange(back_output, 's b d -> b (s d)')
+        # 提取当前机器人状态
+        joint_pos = enc_outputs_dict['obs']['robot0_joint_pos_past_traj'][:, -1, :]  # [B, 7]
+        joint_pos_feat = self.joint_pos_proj(joint_pos)  # [B, 512]
+        joint_pos_feat = joint_pos_feat.unsqueeze(0)  # [1, B, 512]
+        # 融合图像和深度特征，带机器人自感知
+        fused_feat = torch.cat([image_feat_fused, depth_feat_fused, joint_pos_feat], dim=0)  # [128+1, B, D]
+        fused_feat_pos_embed = torch.cat([image_feat_pos_embed, depth_feat_pos_embed, self.state_joint_pos_enc], dim=0)  # [128+1, B, D]
+        # 轨迹查询
+        query_output =  torch.zeros(7, 32, 512).to(fused_feat.device)  # [query_num, batch_size, dim_model]
+        for layer in self.query_to_patch:
+            query_output = layer(
+                query_output, fused_feat, self.sub_target_pos_enc, fused_feat_pos_embed
+            )
+            query_output = query_output + torch.sigmoid(self.query_to_patch_a) * query_output
+        
+        
+        # 融合图像和深度特征
+        # fused_feat = torch.cat([image_feat_fused, depth_feat_fused], dim=0)  # [128, B, D]
+        # fused_feat_pos_embed = torch.cat([image_feat_pos_embed, depth_feat_pos_embed], dim=0)  # [128, B, D]
+        # fused_points3d = torch.cat([points_3d, points_3d], dim=1)  # [B, 128, 3]
+        
+        # 轨迹查询
+        # pos_traj = enc_outputs_dict['obs']['robot0_eef_pos_past_traj']  # ['robot0_eef_pos_step_traj_current']
+        # vel_ang_traj = enc_outputs_dict['obs']['robot0_eef_vel_ang_past_traj']
+        # vel_lin_traj = enc_outputs_dict['obs']['robot0_eef_vel_lin_past_traj']
 
-        traj_output = self.nets['decoder'].forward(back_output)
+        # traj = torch.cat([pos_traj, vel_lin_traj, vel_ang_traj], dim=-1)  # [B, S, 9]
+        # traj_feat = self.past_traj_encoder(traj)  # [B, S, D] -> [32, 10, 512]
+
+        # pos_traj_last = pos_traj[:, -1:, :]  # [B, 1, 3]
+        # vel_ang_traj_last = vel_ang_traj[:, -1:, :]  # [B, 1, 3]
+        # vel_lin_traj_last = vel_lin_traj[:, -1:, :]  # [B, 1, 3]
+        # traj_feat_last = torch.cat([pos_traj_last, vel_lin_traj_last, vel_ang_traj_last], dim=-1)  # [B, 1, 9]
+
+        # traj_feat_last = self.condition_mlp(traj_feat_last)  # [B, 1, D]，可能需要使用不同的投影网络
+
+        # traj_feat_last_query = traj_feat_last.repeat(1, 3, 1)  # [B, 3, D]
+        # query_embedding = self.query_embedding.weight  # [3, D]
+        # query_embedding = query_embedding.unsqueeze(0).repeat(batch_size, 1, 1)  # [B, 3, D]
+        # traj_feat_last_query = traj_feat_last_query + query_embedding  # [B, 3, D]
+        
+        # traj_feat = einops.rearrange(traj_feat, 'B S D -> S B D')  # [S, B, D]
+        # traj_feat_last_query = einops.rearrange(traj_feat_last_query, 'B S D -> S B D')  # [S, B, D]
+
+        # traj_dquery_output, _ = self.query_to_history(
+        #     traj_feat_last_query, traj_feat, self.sub_segment_pos_enc, self.sub_target_pos_enc
+        # )
+
+        # traj_query_output = traj_feat_last_query + torch.sigmoid(self.query_to_history_a) * traj_dquery_output  # [S, B, D]
+
+        # _, attn0 = self.query_to_patch(
+        #    traj_query_output, fused_feat, self.sub_segment_pos_enc, fused_feat_pos_embed, return_attention=True
+        # )
+
+        # # 使用attn0对fused_points3d进行加权平均
+        # # attn0: [B, S, N] 其中S=20是查询数量,N=128是patch数量
+        # # fused_points3d: [B, 128, 3]
+        # # 使用注意力权重对3D点进行加权平均
+        # # attn_weights: [B, S, N], fused_points3d: [B, N, 3]
+        # points_ref = torch.matmul(attn0, fused_points3d)  # [B, S, 3]
+        
+        # D = torch.norm(points_ref[:, :, None, :] - fused_points3d[:, None, :, :], dim=-1)  # [B, S, N]
+
+        # D_med = D.median(dim=-1).values.clamp_min(1e-6)  # [B, S]
+        # D_norm = D / D_med[:, :, None]  # [B, S, N]
+        # lam = 1.0
+        # B_seg = -lam * D_norm  # [B, S, N]
+        # B_seg = B_seg.unsqueeze(1).repeat(1, 8, 1, 1)  # [B, 8, S, N]，扩展为4D以匹配注意力机制的bias输入要求
+        # B_seg = B_seg.view(batch_size * 8, traj_query_output.shape[0], fused_feat.shape[0])  # [B*8, S, N]
+
+        # z_output, _ = self.query_to_patch(
+        #     traj_query_output, fused_feat, self.sub_segment_pos_enc, fused_feat_pos_embed, bias=B_seg
+        # )
+
+        # traj_query_output = einops.rearrange(traj_query_output, 'S B D -> B S D')  # [B, S, D]
+        # z_output = einops.rearrange(z_output, 'S B D -> B S D')  # [B, S, D]
+        # z_output = traj_query_output + torch.sigmoid(self.query_to_patch_a) * z_output  # [B, S, D]
+
+        # q = traj_feat_last.repeat(1, self.query_input_num, 1)  # [B, S, D]
+        # q = q + self.step_embedding.unsqueeze(0)
+        # score = torch.einsum('btd,bkd->btk', q, z_output) / math.sqrt(512)  # [B, S, S]
+        # w = F.softmax(score, dim=-1)  # [B, S, S]
+        # z_step = torch.einsum('btk,bkd->btd', w, z_output)  # [B, S, D]
+
+        # H = q + z_step  # [B, S, D]
+
+        # traj_feat = enc_outputs_dict['obs']['robot0_eef_pos_past_traj']  # ['robot0_eef_pos_step_traj_current']
+        # traj_feat_flat = traj_feat.clone()
+        # if traj_feat_flat.dim() == 3:
+        #     traj_feat_flat = traj_feat_flat.flatten(start_dim=1)  # [B, N, D] -> [B, N*D]
+        # mlp_test_output   = torch.cat([image_feat, depth_feat, traj_feat], dim=-1)  # [B, D]
+        # past_traj_encoder_output = self.past_traj_encoder(traj_feat_flat)  # [B, D]
+
+        # past_traj_condition = past_traj_encoder_output.view(batch_size, -1, 1, 1).repeat(1, 1, 8, 8) # [B, D, H, W]
+        # F_cat = torch.cat([image_feat, past_traj_condition], dim=1)  # [B, C+D, H, W]
+        # logits_goal = self.traj_query_encoder(F_cat)  # [B, 1, H, W]
+        # goal_feat = self.traj_query_encoder.weighted_pool(image_feat, logits_goal)  # [B, C]
+
+        # sub_target_input = past_traj_encoder_output# torch.cat([past_traj_encoder_output, goal_feat], dim=-1)  # [B, D+C]
+        # past_traj_query = self.past_traj_proj(traj_feat)
+        # past_traj_query = einops.rearrange(past_traj_query, 'B S D -> S B D')
+        # image_pos_embed = self.encoder_image_feat_pos_embed(image_feat).to(dtype=image_feat.dtype)
+        # image_feat = einops.rearrange(image_feat, 'B C H W -> (H W) B C')  # [N, B, D]
+        # image_pos_embed = einops.rearrange(image_pos_embed, 'B C H W -> (H W) B C')  # [N, B, D]
+
+        # sub_target_output_coarse = self.sub_target_decoder_coarse(sub_target_input)  # [B, D]
+        # sub_target_output_residual = self.sub_target_decoder_residual(past_traj_query, self.sub_target_pos_enc, image_feat, image_pos_embed)  # [S, B, D]
+        # sub_target_output_coarse = sub_target_output_coarse.unsqueeze(0).repeat(20, 1, 1)  # [S, B, D]
+        # sub_target_output_coarse = sub_target_output_coarse + self.sub_target_pos_enc
+        # sub_target_output = sub_target_output_coarse #  + sub_target_output_residual  # [S, B, D]
+        # sub_target_output = einops.rearrange(
+        #     sub_target_output,
+        #     'S B D -> B S D'
+        # )  # [B, S, D]
+
+        # sub_target_output = self.sub_target_decoder(sub_target_input, past_traj_query, self.sub_target_pos_enc, image_feat, image_pos_embed)
+
+        # traj_query_input_seg1 = torch.cat([past_traj_encoder_output, cls_token_seg1, self.time_scale[0].unsqueeze(0).repeat(batch_size, 1)], dim=-1)  # [B, D+1]
+        # traj_query_input_seg2 = torch.cat([past_traj_encoder_output, cls_token_seg2, self.time_scale[1].unsqueeze(0).repeat(batch_size, 1)], dim=-1)  # [B, D+1]
+        # traj_query_input_seg3 = torch.cat([past_traj_encoder_output, cls_token_seg3, self.time_scale[2].unsqueeze(0).repeat(batch_size, 1)], dim=-1)  # [B, D+1]
+        # traj_query_input_seg4 = torch.cat([past_traj_encoder_output, cls_token_seg4, self.time_scale[3].unsqueeze(0).repeat(batch_size, 1)], dim=-1)  # [B, D+1]
+        # traj_query_input_seg5 = torch.cat([past_traj_encoder_output, cls_token_seg5, self.time_scale[4].unsqueeze(0).repeat(batch_size, 1)], dim=-1)  # [B, D+1]
+        # traj_query_input_seg5 = torch.cat([past_traj_encoder_output, self.cls_token_seg5], dim=-1)  # [B, D+1]
+
+        # traj_query_output_seg1 = self.traj_query_encoder(traj_query_input_seg1)  # [B, D]
+        # traj_query_output_seg2 = self.traj_query_encoder(traj_query_input_seg2)  # [B, D]
+        # traj_query_output_seg3 = self.traj_query_encoder(traj_query_input_seg3)  # [B, D]
+        # traj_query_output_seg4 = self.traj_query_encoder(traj_query_input_seg4)  # [B, D]
+        # traj_query_output_seg5 = self.traj_query_encoder(traj_query_input_seg5)  # [B, D]
+        # traj_query_output_seg5 = self.traj_query_encoder(traj_query_input_seg5)  # [B, D]
+
+        # sub_target_input = torch.stack([
+        #     traj_query_output_seg1,
+        #     traj_query_output_seg2,
+        #     traj_query_output_seg3,
+        #     traj_query_output_seg4,
+        #     traj_query_output_seg5,
+        # ], dim=0)  # [S, B, D]
+        # sub_target_input = traj_query_output_seg5.unsqueeze(0)  # [1, B, D]
+
+        # image_pos_embed = self.encoder_image_feat_pos_embed(image_feat).to(dtype=image_feat.dtype)
+        # image_feat = einops.rearrange(image_feat, 'B C H W -> (H W) B C')  # [N, B, D]
+        # image_pos_embed = einops.rearrange(image_pos_embed, 'B C H W -> (H W) B C')  # [N, B, D]
+        
+        # sub_target_pos_enc = self.sub_target_pos_enc.unsqueeze(1).to(dtype=image_feat.dtype)
+
+        # sub_target_output = self.sub_target_decoder.forward(
+        #     sub_target_input,
+        #     sub_target_pos_enc,
+        #     image_feat,
+        #     image_pos_embed,
+        # )  # [S, B, D]
+
+        # sub_target_output = einops.rearrange(
+        #     sub_target_output,
+        #     'S B D -> B S D'
+        # )  # [B, S, D]
+
+        # if stage != 'A':
+        #     # 仅阶段A不引入深度解码器
+        #     depth_pos_embed = self.encoder_image_feat_pos_embed(depth_feat).to(dtype=depth_feat.dtype)
+        #     depth_feat = einops.rearrange(depth_feat, 'B C H W -> (H W) B C')  # [N, B, D]
+        #     depth_pos_embed = einops.rearrange(depth_pos_embed, 'B C H W -> (H W) B C')  # [N, B, D]
+            
+        #     sub_segment_output = self.sub_segment_decoder.forward(
+        #         sub_target_input,
+        #         sub_target_pos_enc,
+        #         depth_feat,
+        #         depth_pos_embed,
+        #     )  # [S, B, D]
+
+        #     sub_segment_output = einops.rearrange(
+        #         sub_segment_output,
+        #         'S B D -> B S D'
+        #     )  # [B, S, D]
+
+        #     # 融合两部分输出
+        #     fused_output = torch.cat([sub_target_output, sub_segment_output], dim=-1)  # [B, S, D*2]
+        #     fused_output = self.fusion_proj(fused_output)  # [B, S, D]
+
+        # else:
+        #     fused_output = sub_target_output
+
+        # gmm_head_output = self.gmm_head.forward(segment_output)  # [B, S, D]
+        query_output = einops.rearrange(query_output, 'S B D -> B S D')  # [B, S, D]
+        action_output = self.action_proj(query_output)  # [B, S, 7]
 
         if self.save_attention:
             self.attention_maps['encoder_attn'] = self.nets['backbone_encoder'].get_attention_weights()
@@ -999,13 +1382,13 @@ class MIMO_MLP(Module):
         # attn_bias_scale_multihead = attn_bias_scale.unsqueeze(1)
 
         if return_latent and return_attention_weights:
-            return traj_output, image_feat.detach(), back_output.detach()
+            return action_output, L_geo, cam_feat.detach(), joint_pos_feat.detach()
         elif return_latent and not return_attention_weights:
-            return traj_output, back_output.detach()
+            return action_output, L_geo, joint_pos_feat.detach()
         elif not return_latent and return_attention_weights:
-            return traj_output, image_feat.detach()
+            return action_output, L_geo, cam_feat.detach()
         else:
-            return traj_output
+            return action_output, L_geo
         # enc_inputs = {
         #     # 'robot0_eef_pos': obs['robot0_eef_pos'],
         #     'cls': cls_embed,
@@ -1083,11 +1466,14 @@ class MIMO_MLP(Module):
         indent = ' ' * 4
         if self._to_string() != '':
             msg += textwrap.indent("\n" + self._to_string() + "\n", indent)
-        msg += textwrap.indent("\npre_encoder={}".format(self.nets["pre_encoder"]), indent)
-        msg += textwrap.indent("\n\nbackbone_encoder={}".format(self.nets["backbone_encoder"]), indent)
-        msg += textwrap.indent("\n\nbackbone_decoder={}".format(self.nets["backbone_decoder"]), indent)
+        msg += textwrap.indent("\npre_encoder={}".format(self.pre_encoder), indent)
+        # msg += textwrap.indent("\npast_traj_encoder={}".format(self.past_traj_encoder), indent)
+        # msg += textwrap.indent("\ntraj_query_encoder={}".format(self.traj_query_encoder), indent)
+        # msg += textwrap.indent("\nsub_target_decoder_coarse={}".format(self.sub_target_decoder_coarse), indent)
+        # msg += textwrap.indent("\nsub_target_decoder_residual={}".format(self.sub_target_decoder_residual), indent)
+        # msg += textwrap.indent("\ngmm_head={}".format(self.gmm_head), indent)
         # msg += textwrap.indent("\n\nmlp={}".format(self.nets["mlp"]), indent)
-        msg += textwrap.indent("\n\ndecoder={}".format(self.nets["decoder"]), indent)
+        # msg += textwrap.indent("\n\ndecoder={}".format(self.nets["decoder"]), indent)
         msg = header + '(' + msg + '\n)'
         return msg
     
@@ -1173,280 +1559,539 @@ class MIMO_MLP(Module):
         return None
 
 
-class IDCEncoder(nn.Module):
+class TokenNormCenter(nn.Module):
+    def __init__(self, d=512):
+      super().__init__()
+
+      self.ln = nn.LayerNorm(d)
+
+    def forward(self, x):
+      x = self.ln(x)
+      # x = x - x.mean(dim=1, keepdim=True)
+      return x
+
+class PastTrajEncoder(nn.Module):
     def __init__(
         self,
-        num_blocks: int=3,
-        num_cls_tokens_traj: int=3,
-        num_cls_tokens_image: int=3,
-        num_cls_tokens_depth: int=3,
-        dim_model: int=512,
-        n_heads: int=8,
-        dim_feedforward: int=3200,
-        dropout: float=0.1,
+        input_dim: int=30,
+        dim_feedforward: Optional[list[int]]=None,
+        output_dim: int=512,
+        dropout: Optional[list[float]]=None,
         feedforward_activation: str="relu",
-        pre_norm: bool=True,
     ):
-        super(IDCEncoder, self).__init__()
-        
-        self.num_blocks = num_blocks
+        super(PastTrajEncoder, self).__init__()
 
-        self.segment_wise_encoder_image = nn.ModuleList([
-            IDCEncoderLayer(
-                dim_model=dim_model,
-                n_heads=n_heads,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
-                feedforward_activation=feedforward_activation,
-                pre_norm=pre_norm,
-            )
-            for _ in range(self.num_blocks)
-        ])
-        self.segment_wise_encoder_depth = nn.ModuleList([
-            IDCEncoderLayer(
-                dim_model=dim_model,
-                n_heads=n_heads,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
-                feedforward_activation=feedforward_activation,
-                pre_norm=pre_norm,
-            )
-            for _ in range(self.num_blocks)
-        ])
-        self.segment_wise_encoder_traj = nn.ModuleList([
-            IDCEncoderLayer(
-                dim_model=dim_model,
-                n_heads=n_heads,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
-                feedforward_activation=feedforward_activation,
-                pre_norm=pre_norm,
-            )
-            for _ in range(self.num_blocks)
-        ])
+        self.traj_encoder = MLP(
+            input_dim=input_dim,  #mlp_input_dim,
+            output_dim=output_dim,
+            layer_dims=dim_feedforward,
+            layer_func=nn.Linear,
+            dropouts=dropout,
+            activation=get_activation_fn(feedforward_activation),
+            output_activation=get_activation_fn(feedforward_activation), # make sure non-linearity is applied before decoder
+        )
 
-        self.cross_segment_encoder = nn.ModuleList([
-            IDCEncoderLayer(
-                dim_model=dim_model,
-                n_heads=n_heads,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
-                feedforward_activation=feedforward_activation,
-                pre_norm=pre_norm,
-            )
-            for _ in range(self.num_blocks)
-        ])
+    def forward(self, traj_seg):
+        return self.traj_encoder(traj_seg)
+    
 
-        self.traj_cls = num_cls_tokens_traj
-        self.image_cls = num_cls_tokens_image
-        self.depth_cls = num_cls_tokens_depth
+class TrajQueryEncoder(nn.Module):
+  """
+  接收 ResNet / 图像特征图 (B, C, H, W)，依次经过 3x3 卷积、激活、1x1 卷积，
+  输出 heatmap (B, out_channels, H, W)。
+
+  Args:
+    in_channels (int): 输入特征图通道数（ResNet 输出通道数）。
+    mid_channels (int): 中间卷积通道数（3x3 的输出通道）。
+    out_channels (int): heatmap 输出通道数。
+    activation (str|Callable): 激活函数名称 ('relu','gelu','glu') 或 nn.Module 类/实例。
+  """
+  def __init__(
+    self,
+    in_channels: int = 512,
+    out_channels: int = 1,
+    activation: str | Callable = "relu",
+  ):
+    super(TrajQueryEncoder, self).__init__()
+    mid_channels = in_channels // 2  # 中间通道数为输入通道数的一半
+    # 3x3 conv 保持空间尺寸，1x1 conv 投影到 heatmap 通道
+    self.conv3x3 = nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=True)
+    self.conv1x1 = nn.Conv2d(mid_channels, out_channels, kernel_size=1, padding=0, bias=True)
+
+    # 构造激活函数：接受字符串或直接传入的可调用
+    if isinstance(activation, str):
+      act_cls = get_activation_fn(activation)
+      self.act = act_cls()
+    elif isinstance(activation, type) and issubclass(activation, nn.Module):
+      self.act = activation()
+    else:
+      # 允许传入已经实例化的激活函数
+      self.act = activation
+
+    # 权重初始化：与文件中其它模块风格一致
+    nn.init.kaiming_uniform_(self.conv3x3.weight, a=math.sqrt(5))
+    if self.conv3x3.bias is not None:
+      fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.conv3x3.weight)
+      bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+      nn.init.uniform_(self.conv3x3.bias, -bound, bound)
+    nn.init.kaiming_uniform_(self.conv1x1.weight, a=math.sqrt(5))
+    if self.conv1x1.bias is not None:
+      fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.conv1x1.weight)
+      bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+      nn.init.uniform_(self.conv1x1.bias, -bound, bound)
+
+  def forward(self, feat_map: Tensor) -> Tensor:
+    """
+    Args:
+      feat_map: (B, C, H, W) 输入特征图
+    Returns:
+      heatmap: (B, out_channels, H, W)
+    """
+    x = self.conv3x3(feat_map)
+    x = self.act(x)
+    heatmap = self.conv1x1(x)
+    return heatmap
+
+  def weighted_pool(self, feat_map, heatmap):
+    """
+    使用 heatmap 对特征图进行加权池化。
+
+    Args:
+      feat_map: (B, C, H, W) 输入特征图
+      heatmap: (B, out_channels, H, W) 权重热图
+    Returns:
+      pooled: (B, C) 加权池化后的特征向量
+    """
+    # 对 heatmap 进行 softmax 归一化，在空间维度 (H, W) 上
+    B, out_ch, H, W = heatmap.shape
+    heatmap_flat = heatmap.view(B, out_ch, -1)  # (B, out_channels, H*W)
+    weights = F.softmax(heatmap_flat, dim=-1)  # (B, out_channels, H*W)
+
+    # 如果 out_channels > 1，对所有通道的权重取平均
+    if out_ch > 1:
+        weights = weights.mean(dim=1, keepdim=True)  # (B, 1, H*W)
+
+    # 将特征图展平
+    C = feat_map.size(1)
+    feat_flat = feat_map.view(B, C, -1)  # (B, C, H*W)
+
+    # 广播权重到所有通道，并进行加权求和
+    # weights: (B, 1, H*W) -> broadcast to (B, C, H*W)
+    pooled = (feat_flat * weights).sum(dim=-1)  # (B, C)
+
+    return pooled
+
+
+class SelfAttentionBlock(nn.Module):
+  """自注意力模块"""
+  def __init__(
+    self,
+    dim_model: int = 512,
+    n_heads: int = 8,
+    dropout: float = 0.1,
+    pre_norm: bool = True,
+  ):
+    super(SelfAttentionBlock, self).__init__()
+    self.self_attn = nn.MultiheadAttention(dim_model, n_heads, dropout=dropout)
+    self.norm = nn.LayerNorm(dim_model)
+    self.dropout = nn.Dropout(dropout)
+    self.pre_norm = pre_norm
+    
+    self.save_attention = False
+    self.last_attn_weights = None
+
+  def maybe_add_pos_embed(self, tensor: Tensor, pos_embed: Optional[Tensor] = None) -> Tensor:
+    return tensor if pos_embed is None else tensor + pos_embed
+
+  def forward(
+    self,
+    x: Tensor,
+    pos_embed: Optional[Tensor] = None,
+  ) -> Tensor:
+    skip = x
+    if self.pre_norm:
+      x = self.norm(x)
+    
+    q = k = self.maybe_add_pos_embed(x, pos_embed)
+    if self.save_attention:
+      x, attn_weights = self.self_attn(q, k, value=x, need_weights=True)
+      self.last_attn_weights = attn_weights.detach()
+    else:
+      x = self.self_attn(q, k, value=x)[0]
+    
+    x = skip + self.dropout(x)
+    if not self.pre_norm:
+      x = self.norm(x)
+    return x
+
+
+class CrossAttentionBlock(nn.Module):
+  """交叉注意力模块"""
+  def __init__(
+    self,
+    dim_model: int = 512,
+    n_heads: int = 8,
+    dropout: float = 0.1,
+    pre_norm: bool = True,
+  ):
+    super(CrossAttentionBlock, self).__init__()
+    self.multihead_attn = nn.MultiheadAttention(dim_model, n_heads, dropout=dropout)
+    self.norm = nn.LayerNorm(dim_model)
+    self.dropout = nn.Dropout(dropout)
+    self.pre_norm = pre_norm
+    
+    self.save_attention = False
+    self.last_attn_weights = None
+
+  def maybe_add_pos_embed(self, tensor: Tensor, pos_embed: Optional[Tensor] = None) -> Tensor:
+    return tensor if pos_embed is None else tensor + pos_embed
+
+  def forward(
+    self,
+    x: Tensor,
+    encoder_out: Tensor,
+    decoder_pos_embed: Optional[Tensor] = None,
+    encoder_pos_embed: Optional[Tensor] = None,
+    return_attention: bool = True,
+    bias: Optional[Tensor] = None,
+  ) -> Tensor:
+    skip = x
+    if self.pre_norm:
+      x = self.norm(x)
+
+    x, attn_weights = self.multihead_attn(
+      query=self.maybe_add_pos_embed(x, decoder_pos_embed),
+      key=self.maybe_add_pos_embed(encoder_out, encoder_pos_embed),
+      value=encoder_out,
+      need_weights=True,
+      attn_mask=bias,
+      # average_attn_weights=False,
+    )
+
+    if self.save_attention:
+      self.last_attn_weights = attn_weights.detach()
+    
+    x = skip + self.dropout(x)
+    if not self.pre_norm:
+      x = self.norm(x)
+    
+    # if return_attention:
+    #   return x, attn_weights
+    
+    return x, attn_weights
+
+class CrossAttentionLayer(nn.Module):
+    """交叉注意力层，仅包含交叉注意力模块"""
+    def __init__(
+        self,
+        n_layers: int = 3,
+        dim_model: int = 512,
+        n_heads: int = 8,
+        dropout: float = 0.1,
+        pre_norm: bool = True,
+    ):
+      super(CrossAttentionLayer, self).__init__()
+      
+      self.cross_attn_layers = nn.ModuleList([
+        CrossAttentionBlock(
+          dim_model=dim_model,
+          n_heads=n_heads,
+          dropout=dropout,
+          pre_norm=pre_norm,
+        )
+        for _ in range(n_layers)
+      ])
+
+      # 添加最后的输出归一化
+      self.norm = nn.LayerNorm(dim_model)
 
     def forward(
-        self,
-        segments_image,
-        pos_embed_image,
-        segments_depth,
-        pos_embed_depth,
-        segments_traj,
-        pos_embed_traj,
-        pos_embed_cls
-    ):
-        segments_image = einops.rearrange(segments_image, 'b s d -> s b d')  # [S, B, D]
-        segments_depth = einops.rearrange(segments_depth, 'b s d -> s b d')  # [S, B, D]
-        segments_traj = einops.rearrange(segments_traj, 'b s d -> s b d')  # [S, B, D]
-
-        for i in range(self.num_blocks):
-            # segment-wise encoding
-            # NOTE: 暂时使用共享的segment-wise encoder
-            update_segment_image = self.segment_wise_encoder_image[i](segments_image, pos_embed=pos_embed_image)
-            update_segment_depth = self.segment_wise_encoder_depth[i](segments_depth, pos_embed=pos_embed_depth)
-            update_segment_traj = self.segment_wise_encoder_traj[i](segments_traj, pos_embed=pos_embed_traj)
-
-            update_cls_tokens = self.cross_segment_encoder[i](
-                torch.cat([
-                    update_segment_image[:self.image_cls],
-                    update_segment_depth[:self.depth_cls],
-                    update_segment_traj[:self.traj_cls],
-                ], dim=0),
-                pos_embed=pos_embed_cls
-            )
-
-            segments_image = torch.cat([update_cls_tokens[:self.image_cls], update_segment_image[self.image_cls:]], dim=0)
-            segments_depth = torch.cat([update_cls_tokens[self.image_cls:self.image_cls + self.depth_cls], update_segment_depth[self.depth_cls:]], dim=0)
-            segments_traj = torch.cat([update_cls_tokens[self.image_cls + self.depth_cls:], update_segment_traj[self.traj_cls:]], dim=0)
-    
-        # segments = torch.cat([segments_image, segments_depth, segments_traj], dim=0)  # [S_total, B, D]
-
-        # return segments
-        return segments_image, segments_depth, segments_traj
-    
-    def get_attention_weights(self):
-        encoder_self_attn_weights = []
-        for layer in self.segment_wise_encoder:
-            encoder_self_attn_weights.append(layer.last_self_attn_weights)
-        for layer in self.cross_segment_encoder:
-            encoder_self_attn_weights.append(layer.last_self_attn_weights)
-        return encoder_self_attn_weights
-
-class IDCEncoderLayer(nn.Module):
-    def __init__(
-        self,
-        dim_model: int=512,
-        n_heads: int=8,
-        dim_feedforward: int=3200,
-        dropout: float=0.1,
-        feedforward_activation: str="relu",
-        pre_norm: bool=True,
-    ):
-        super(IDCEncoderLayer, self).__init__()
-        self.self_attn = nn.MultiheadAttention(dim_model, n_heads, dropout=dropout)
-
-        # Feed forward layers.
-        self.linear1 = nn.Linear(dim_model, dim_feedforward)
-        self.dropout = nn.Dropout(dropout)
-        self.linear2 = nn.Linear(dim_feedforward, dim_model)
-
-        self.norm1 = nn.LayerNorm(dim_model)
-        self.norm2 = nn.LayerNorm(dim_model)
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-
-        self.activation = get_activation_fn(feedforward_activation)
-        self.pre_norm = pre_norm
-
-        self.save_attention = False
-        self.last_self_attn_weights = None
-
-    def forward(self, x, pos_embed: Optional[Tensor] = None, key_padding_mask: Optional[Tensor] = None, attn_mask: Optional[Tensor] = None) -> Tensor:
-        skip = x
-        if self.pre_norm:
-            x = self.norm1(x)
-        q = k = x if pos_embed is None else x + pos_embed
-        if self.save_attention:
-            x, attn_weights = self.self_attn(q, k, value=x, key_padding_mask=key_padding_mask, attn_mask=attn_mask, need_weights=True)
-            self.last_self_attn_weights = attn_weights.detach()
-        else:
-            x = self.self_attn(q, k, value=x, key_padding_mask=key_padding_mask, attn_mask=attn_mask)[0]
-        # x = x[0]  # note: [0] to select just the output, not the attention weights
-        x = skip + self.dropout1(x)
-        if self.pre_norm:
-            skip = x
-            x = self.norm2(x)
-        else:
-            x = self.norm1(x)
-            skip = x
-        x = self.linear2(self.dropout(self.activation(self.linear1(x))))
-        x = skip + self.dropout2(x)
-        if not self.pre_norm:
-            x = self.norm2(x)
-        return x
-
-
-class IDCDecoderLayer(nn.Module):
-    def __init__(
-        self,
-        dim_model: int=512,
-        n_heads: int=8,
-        dim_feedforward: int=3200,
-        dropout: float=0.1,
-        feedforward_activation: str="relu",
-        pre_norm: bool=True,
-    ):
-        super(IDCDecoderLayer, self).__init__()
-        self.self_attn = nn.MultiheadAttention(dim_model, n_heads, dropout=dropout)
-        self.multihead_attn = nn.MultiheadAttention(dim_model, n_heads, dropout=dropout)
-
-        # Feed forward layers.
-        self.linear1 = nn.Linear(dim_model, dim_feedforward)
-        self.dropout = nn.Dropout(dropout)
-        self.linear2 = nn.Linear(dim_feedforward, dim_model)
-
-        self.norm1 = nn.LayerNorm(dim_model)
-        self.norm2 = nn.LayerNorm(dim_model)
-        self.norm3 = nn.LayerNorm(dim_model)
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-        self.dropout3 = nn.Dropout(dropout)
-        self.activation = get_activation_fn(feedforward_activation)
-        self.pre_norm = pre_norm
-
-        self.save_attention = False
-        self.last_self_attn_weights = None
-        self.last_cross_attn_weights = None
-
-    def maybe_add_pos_embed(self, tensor: Tensor, pos_embed: Optional[Tensor] = None) -> Tensor:
-        return tensor if pos_embed is None else tensor + pos_embed
-
-    def forward(
-        self,
-        x: Tensor,
-        encoder_out: Tensor,
-        decoder_pos_embed: Optional[Tensor] = None,
-        encoder_pos_embed: Optional[Tensor] = None,
+      self,
+      x: Tensor,
+      encoder_out: Tensor,
+      decoder_pos_embed: Optional[Tensor] = None,
+      encoder_pos_embed: Optional[Tensor] = None,
+      return_attention: bool = True,
+      bias: Optional[Tensor] = None,
     ) -> Tensor:
-        """
-        Args:
-            x: (Decoder Sequence, Batch, Channel) tensor of input tokens.
-            encoder_out: (Encoder Sequence, B, C) output features from the last layer of the encoder we are
-                cross-attending with.
-            decoder_pos_embed: (ES, 1, C) positional embedding for keys (from the encoder).
-            encoder_pos_embed: (DS, 1, C) Positional_embedding for the queries (from the decoder).
-        Returns:
-            (DS, B, C) tensor of decoder output features.
-        """
-        skip = x
-        if self.pre_norm:
-            x = self.norm1(x)
-        q = k = self.maybe_add_pos_embed(x, decoder_pos_embed)
-        if self.save_attention:
-            x, self_attn_weights = self.self_attn(q, k, value=x, need_weights=True)
-            self.last_self_attn_weights = self_attn_weights.detach()
-        else:
-            x = self.self_attn(q, k, value=x)[0]
-        # x = x[0]  # select just the output, not the attention weights
-        x = skip + self.dropout1(x)
-        if self.pre_norm:
-            skip = x
-            x = self.norm2(x)
-        else:
-            x = self.norm1(x)
-            skip = x
-        if self.save_attention:
-            x, cross_attn_weights = self.multihead_attn(
-                query=self.maybe_add_pos_embed(x, decoder_pos_embed),
-                key=self.maybe_add_pos_embed(encoder_out, encoder_pos_embed),
-                value=encoder_out,
-                need_weights=True,
-            )
-            self.last_cross_attn_weights = cross_attn_weights.detach()
-        else:
-            x = self.multihead_attn(
-                query=self.maybe_add_pos_embed(x, decoder_pos_embed),
-                key=self.maybe_add_pos_embed(encoder_out, encoder_pos_embed),
-                value=encoder_out,
-            )[0]  # select just the output, not the attention weights
-        x = skip + self.dropout2(x)
-        if self.pre_norm:
-            skip = x
-            x = self.norm3(x)
-        else:
-            x = self.norm2(x)
-            skip = x
-        x = self.linear2(self.dropout(self.activation(self.linear1(x))))
-        x = skip + self.dropout3(x)
-        if not self.pre_norm:
-            x = self.norm3(x)
-        return x
+      """
+      Args:
+        x: (Decoder Sequence, Batch, Channel) tensor of input tokens.
+        encoder_out: (Encoder Sequence, B, C) output features from the last layer of the encoder.
+        decoder_pos_embed: (DS, 1, C) positional embedding for decoder queries.
+        encoder_pos_embed: (ES, 1, C) positional embedding for encoder keys.
+      Returns:
+        (DS, B, C) tensor of decoder output features.
+      """
+      for layer in self.cross_attn_layers:
+        x, attn = layer(
+          x,
+          encoder_out,
+          decoder_pos_embed,
+          encoder_pos_embed,
+          return_attention=return_attention,
+          bias=bias,
+        )
 
-class TrajectoryDecoder(nn.Module):
+      # 在返回前进行归一化
+      x = self.norm(x)
+    
+      return x, attn
+
+class SubTargetDecoderLayer(nn.Module):
+  """完整的解码器层，结合自注意力、交叉注意力和前馈网络"""
+  def __init__(
+    self,
+    dim_model: int = 512,
+    n_heads: int = 8,
+    dim_feedforward: int = 3200,
+    dropout: float = 0.1,
+    feedforward_activation: str = "relu",
+    pre_norm: bool = True,
+  ):
+    super(SubTargetDecoderLayer, self).__init__()
+    
+    # 自注意力模块
+    self.self_attn_block = SelfAttentionBlock(
+      dim_model=dim_model,
+      n_heads=n_heads,
+      dropout=dropout,
+      pre_norm=pre_norm,
+    )
+    
+    # 交叉注意力模块
+    self.cross_attn_block = CrossAttentionBlock(
+      dim_model=dim_model,
+      n_heads=n_heads,
+      dropout=dropout,
+      pre_norm=pre_norm,
+    )
+    
+    # 前馈网络
+    self.linear1 = nn.Linear(dim_model, dim_feedforward)
+    self.dropout = nn.Dropout(dropout)
+    self.linear2 = nn.Linear(dim_feedforward, dim_model)
+    self.norm3 = nn.LayerNorm(dim_model)
+    self.dropout3 = nn.Dropout(dropout)
+    self.activation = get_activation_fn(feedforward_activation)()
+    self.pre_norm = pre_norm
+    
+    self.save_attention = False
+
+  @property
+  def last_self_attn_weights(self):
+    return self.self_attn_block.last_attn_weights
+  
+  @property
+  def last_cross_attn_weights(self):
+    return self.cross_attn_block.last_attn_weights
+
+  def forward(
+    self,
+    x: Tensor,
+    encoder_out: Tensor,
+    decoder_pos_embed: Optional[Tensor] = None,
+    encoder_pos_embed: Optional[Tensor] = None,
+    return_attention: bool = True,
+    bias: Optional[Tensor] = None,
+  ) -> Tensor:
+    """
+    Args:
+      x: (Decoder Sequence, Batch, Channel) tensor of input tokens.
+      encoder_out: (Encoder Sequence, B, C) output features from the last layer of the encoder.
+      decoder_pos_embed: (DS, 1, C) positional embedding for decoder queries.
+      encoder_pos_embed: (ES, 1, C) positional embedding for encoder keys.
+    Returns:
+      (DS, B, C) tensor of decoder output features.
+    """
+    # 设置子模块的注意力保存状态
+    self.self_attn_block.save_attention = self.save_attention
+    self.cross_attn_block.save_attention = self.save_attention
+    
+    # 自注意力
+    x = self.self_attn_block(x, decoder_pos_embed)
+    
+    # 交叉注意力
+    x, _ = self.cross_attn_block(x, encoder_out, decoder_pos_embed, encoder_pos_embed, return_attention=return_attention, bias=bias)
+    
+    # 前馈网络
+    skip = x
+    if self.pre_norm:
+      x = self.norm3(x)
+    x = self.linear2(self.dropout(self.activation(self.linear1(x))))
+    x = skip + self.dropout3(x)
+    if not self.pre_norm:
+      x = self.norm3(x)
+    
+    return x
+
+class CoarseTargetDecoder(nn.Module):
+  """MLP主干网络，用于粗粒度目标解码"""
+  def __init__(
+    self,
+    input_dim: int = 512 + 128,
+    dim_feedforward: Optional[list[int]] = None,
+    output_dim: int = 512,
+    dropout: Optional[list[float]] = None,
+    feedforward_activation: str = "relu",
+  ):
+    super(CoarseTargetDecoder, self).__init__()
+    
+    self.mlp = MLP(
+      input_dim=input_dim,
+      output_dim=output_dim,
+      layer_dims=dim_feedforward,
+      layer_func=nn.Linear,
+      dropouts=dropout,
+      activation=get_activation_fn(feedforward_activation),
+      output_activation=get_activation_fn(feedforward_activation),
+    )
+  
+  def forward(self, x: Tensor) -> Tensor:
+    """
+    Args:
+      x: (B, input_dim) 输入特征
+    Returns:
+      (B, output_dim) 粗粒度目标特征
+    """
+    return self.mlp(x)
+
+
+class ResidualTargetDecoder(nn.Module):
+  """Transformer解码器，用于细粒度残差修正"""
+  def __init__(
+    self,
+    n_decoder_layers: int = 3,
+    dim_model: int = 512,
+    n_heads: int = 8,
+    dim_feedforward: int = 3200,
+    dropout: float = 0.1,
+    feedforward_activation: str = "relu",
+    pre_norm: bool = True,
+  ):
+    super(ResidualTargetDecoder, self).__init__()
+    
+    self.decoder_layers = nn.ModuleList([
+      SubTargetDecoderLayer(
+        dim_model=dim_model,
+        n_heads=n_heads,
+        dim_feedforward=dim_feedforward,
+        dropout=dropout,
+        feedforward_activation=feedforward_activation,
+        pre_norm=pre_norm,
+      )
+      for _ in range(n_decoder_layers)
+    ])
+    
+    self.norm = nn.LayerNorm(dim_model)
+  
+  def forward(
+    self,
+    decoder_input: Tensor,
+    decoder_pos_embed: Optional[Tensor] = None,
+    encoder_context: Optional[Tensor] = None,
+    encoder_pos_embed: Optional[Tensor] = None,
+  ) -> Tensor:
+    """
+    Args:
+      decoder_input: (S, B, D) 解码器输入
+      decoder_pos_embed: (S, 1, D) 解码器位置编码
+      encoder_context: (N, B, D) 编码器上下文
+      encoder_pos_embed: (N, 1, D) 编码器位置编码
+    Returns:
+      (S, B, D) 细粒度残差特征
+    """
+    x = decoder_input
+    for layer in self.decoder_layers:
+      x = layer(
+        x,
+        encoder_context,
+        decoder_pos_embed=decoder_pos_embed,
+        encoder_pos_embed=encoder_pos_embed,
+      )
+    
+    return self.norm(x)
+
+
+class SubTargetDecoder(nn.Module):
+  """组合粗粒度和细粒度解码器，通过残差连接输出最终结果"""
+  def __init__(
+    self,
+    input_dim: int = 512 + 128,
+    dim_feedforward: int = 1024,
+    output_dim: int = 512,
+    n_decoder_layers: int = 3,
+    dim_model: int = 512,
+    n_heads: int = 8,
+    trans_dim_feedforward: int = 3200,
+    dropout: float = 0.1,
+    feedforward_activation: str = "relu",
+    pre_norm: bool = True,
+  ):
+    super(SubTargetDecoder, self).__init__()
+    
+    # 粗粒度MLP解码器
+    self.coarse_decoder = CoarseTargetDecoder(
+      input_dim=input_dim,
+      dim_feedforward=dim_feedforward,
+      output_dim=output_dim,
+      dropout=dropout,
+      feedforward_activation=feedforward_activation,
+    )
+    
+    # 细粒度Transformer解码器
+    self.residual_decoder = ResidualTargetDecoder(
+      n_decoder_layers=n_decoder_layers,
+      dim_model=dim_model,
+      n_heads=n_heads,
+      dim_feedforward=trans_dim_feedforward,
+      dropout=dropout,
+      feedforward_activation=feedforward_activation,
+      pre_norm=pre_norm,
+    )
+  
+  def forward(
+    self,
+    coarse_input: Tensor,
+    decoder_input: Tensor,
+    decoder_pos_embed: Optional[Tensor] = None,
+    encoder_context: Optional[Tensor] = None,
+    encoder_pos_embed: Optional[Tensor] = None,
+  ) -> Tensor:
+    """
+    Args:
+      coarse_input: (B, input_dim) MLP输入
+      decoder_input: (S, B, D) Transformer解码器输入
+      decoder_pos_embed: (S, 1, D) 解码器位置编码
+      encoder_context: (N, B, D) 编码器上下文
+      encoder_pos_embed: (N, 1, D) 编码器位置编码
+    Returns:
+      (S, B, D) 最终输出特征
+    """
+    # 粗粒度分支
+    coarse_output = self.coarse_decoder(coarse_input)  # (B, output_dim)
+    
+    # 细粒度分支
+    residual_output = self.residual_decoder(
+      decoder_input,
+      decoder_pos_embed=decoder_pos_embed,
+      encoder_context=encoder_context,
+      encoder_pos_embed=encoder_pos_embed,
+    )  # (S, B, D)
+    
+    # 残差连接：需要将coarse_output扩展到序列维度
+    S = residual_output.shape[0]
+    coarse_output_expanded = coarse_output.unsqueeze(0).expand(S, -1, -1)  # (S, B, D)
+    
+    output = coarse_output_expanded + residual_output
+    
+    return output
+
+
+class SubSegmentDecoder(nn.Module):
     def __init__(
       self,
-      num_cls_tokens_traj: int=3,
-      num_cls_tokens_image: int=3,
-      num_cls_tokens_depth: int=3,
-      n_pre_decoder_layers: int=2,
-      n_post_decoder_layers: int=2,
-      n_sync_decoder_layers: int=1,
+      n_decoder_layers: int=3,
       dim_model: int=512,
       n_heads: int=8,
       dim_feedforward: int=3200,
@@ -1454,10 +2099,10 @@ class TrajectoryDecoder(nn.Module):
       feedforward_activation: str="relu",
       pre_norm: bool=True,
     ):
-        super(TrajectoryDecoder, self).__init__()
+        super(SubSegmentDecoder, self).__init__()
 
-        self.image_pre_decoder = nn.ModuleList([
-            IDCDecoderLayer(
+        self.sub_target_decoder = nn.ModuleList([
+            SubTargetDecoderLayer(
                 dim_model=dim_model,
                 n_heads=n_heads,
                 dim_feedforward=dim_feedforward,
@@ -1465,131 +2110,31 @@ class TrajectoryDecoder(nn.Module):
                 feedforward_activation=feedforward_activation,
                 pre_norm=pre_norm,
             )
-            for _ in range(n_pre_decoder_layers)
-        ])
-        self.depth_pre_decoder = nn.ModuleList([
-            IDCDecoderLayer(
-                dim_model=dim_model,
-                n_heads=n_heads,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
-                feedforward_activation=feedforward_activation,
-                pre_norm=pre_norm,
-            )
-            for _ in range(n_pre_decoder_layers)
-        ])
-
-        self.sync_block = nn.ModuleList([
-            nn.MultiheadAttention(dim_model, n_heads, dropout=dropout, batch_first=False)
-            for _ in range(n_sync_decoder_layers)
-        ])
-        self.sync_attn_weight = None
-
-        self.traj_post_decoder = nn.ModuleList([
-            IDCDecoderLayer(
-                dim_model=dim_model,
-                n_heads=n_heads,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
-                feedforward_activation=feedforward_activation,
-                pre_norm=pre_norm,
-            )
-            for _ in range(n_post_decoder_layers)
+            for _ in range(n_decoder_layers)
         ])
 
         # 输出归一化
         self.norm = nn.LayerNorm(dim_model)
-
-        self.num_cls_tokens_traj = num_cls_tokens_traj
-        self.num_cls_tokens_image = num_cls_tokens_image
-        self.num_cls_tokens_depth = num_cls_tokens_depth
     
     def forward(
         self,
         decoder_input,
-        image_encoder_context,
-        depth_encoder_context,
-        image_encoder_pos,
-        depth_encoder_pos,
         decoder_pos_embed,
+        encoder_context,
+        encoder_pos_embed,
     ):
-        # 基于depth特征，通过余弦相似度计算获取反映depth连续性的attention bias
-        # depth_norm = F.normalize(depth_input, p=2, dim=-1)
 
-        # attn_bias = torch.bmm(depth_norm, depth_norm.transpose(1, 2))  # [B, N, N]
-        # attn_bias_scale = 0.05 * attn_bias  # scale the bias
-
-        # attn_bias_scale_multihead = attn_bias_scale.unsqueeze(1)
-
-        # num_head = 8
-        # attn_bias_scale_multihead = attn_bias_scale.unsqueeze(1).repeat(1, num_head, 1, 1)  # [B, num_head, N, N]
-
-        image_output = decoder_input.clone()
-        depth_output = decoder_input.clone()
-
-        for layer in self.image_pre_decoder:
-            image_output = layer(
-                image_output,
-                image_encoder_context,
+        for layer in self.sub_target_decoder:
+            decoder_input = layer(
+                decoder_input,
+                encoder_context,
                 decoder_pos_embed=decoder_pos_embed,
-                encoder_pos_embed=image_encoder_pos,
-            )
-
-        for layer in self.depth_pre_decoder:
-            depth_output = layer(
-                depth_output,
-                depth_encoder_context,
-                decoder_pos_embed=decoder_pos_embed,
-                encoder_pos_embed=depth_encoder_pos,
+                encoder_pos_embed=encoder_pos_embed,
             )
         
-        
-        # concatenated = torch.cat([image_output, depth_output], dim=0)  # [2*chunk_size, B, D]
-        # concatenated_with_pos = torch.cat([image_output + decoder_pos_embed, depth_output + decoder_pos_embed], dim=0)
-        # concatenated = image_output + depth_output  # [chunk_size, B, D]
+        z_subtraj_output = self.norm(decoder_input)
 
-        for sync_layer in self.sync_block:
-            # concatenated_with_pos = concatenated + decoder_pos_embed
-            # concatenated_with_pos = torch.cat([image_output + decoder_pos_embed, depth_output + decoder_pos_embed], dim=0)
-            # concatenated_with_pos = concatenated + torch.cat([decoder_pos_embed, decoder_pos_embed], dim=0)
-            synchronized, sync_attn_weights = sync_layer(
-                image_output + decoder_pos_embed,
-                depth_output + decoder_pos_embed,
-                depth_output,
-                # attn_mask=attn_bias_scale_multihead,
-            )
-            depth_output = depth_output + synchronized
-            self.sync_attn_weight = sync_attn_weights.detach()
-
-        for layer in self.traj_post_decoder:
-            traj_output = layer(
-                depth_output,
-                depth_output,
-                decoder_pos_embed=decoder_pos_embed,
-                encoder_pos_embed=decoder_pos_embed
-            )
-
-        traj_output = self.norm(traj_output)
-
-        return traj_output
-
-    def get_attention_weights(self):
-        decoder_attn_weights = []
-        for layer in self.image_pre_decoder:
-            decoder_attn_weights.append(layer.last_self_attn_weights)
-            decoder_attn_weights.append(layer.last_cross_attn_weights)
-        for layer in self.depth_pre_decoder:
-            decoder_attn_weights.append(layer.last_self_attn_weights)
-            decoder_attn_weights.append(layer.last_cross_attn_weights)
-        
-        for layer in self.sync_block:
-            decoder_attn_weights.append(layer.last_attn_weights)
-
-        for layer in self.traj_post_decoder:
-            decoder_attn_weights.append(layer.last_self_attn_weights)
-            decoder_attn_weights.append(layer.last_cross_attn_weights)
-        return decoder_attn_weights
-
+        return z_subtraj_output
 
 def create_sinusoidal_pos_embedding(num_positions: int, dimension: int) -> Tensor:
     """1D sinusoidal positional embeddings as in Attention is All You Need.
@@ -1668,9 +2213,9 @@ class ACTSinusoidalPositionEmbedding2d(nn.Module):
 def get_activation_fn(activation: str) -> Callable:
     """Return an activation function given a string."""
     if activation == "relu":
-        return F.relu
+        return nn.ReLU
     if activation == "gelu":
-        return F.gelu
+        return nn.GELU
     if activation == "glu":
-        return F.glu
+        return nn.GLU
     raise RuntimeError(f"activation should be relu/gelu/glu, not {activation}.")

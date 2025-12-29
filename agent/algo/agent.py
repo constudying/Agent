@@ -4,6 +4,7 @@ import copy
 import h5py
 import json
 import numpy as np
+import einops
 import torch
 import torch.nn as nn
 
@@ -543,9 +544,8 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         assert self.algo_config.highlevel.enabled
         assert not self.algo_config.lowlevel.enabled
 
-        del self.obs_shapes['robot0_eef_pos_step_traj_future']
+        # del self.obs_shapes['robot0_eef_pos_step_traj_future']
         self.ac_dim = self.algo_config.highlevel.ac_dim
-        self.obs_shapes['robot0_eef_pos_step_traj_current'] = [30,]
 
         self.nets = nn.ModuleDict()
 
@@ -565,6 +565,15 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         self.save_count = 0
 
         self.nets = self.nets.float().to(self.device)
+
+        # 训练阶段配置信息
+        self._current_state = None
+        self._stage_epoch_cache = -1
+
+        # 评估阶段配置信息
+        self._epoch_switch = False
+        self._ground_truth_traj = []
+        self._predicted_traj = []
 
     @staticmethod
     def load_obs_normalization_stats(stats_path):
@@ -591,7 +600,7 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
 
     def postprocess_batch_for_training(self, batch, obs_normalization_stats):
 
-        stats_file_path = '/home/lsy/cjh/project1/Agent/agent/datasets/playdata/image_demo_local_depth_step_obs_stats_with_images.json'
+        stats_file_path = '/home/lsy/cjh/project1/Agent/agent/datasets/playdata/obs_stats.json'
         obs_normalization_stats = self.load_obs_normalization_stats(stats_file_path)
 
         obs_normalization_stats = TensorUtils.to_float(
@@ -614,7 +623,8 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
 
         batch = recurse_helper(batch)
 
-        batch["obs"]["agentview_image"] = batch["goal_obs"]["agentview_image"][:, 0]
+        # import ipdb; ipdb.set_trace()
+        # batch["obs"]["agentview_image"] = batch["goal_obs"]["agentview_image"][:, 0]
 
         # Reshape trajectory from [seq, gap*3] to [seq, gap, 3]
         # if 'robot0_eef_pos_past_traj' in batch['obs']:
@@ -628,22 +638,24 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         #       batch['obs']['robot0_eef_pos_past_traj_delta'].shape[0], -1, 3
         #     )
 
-        if 'robot0_eef_pos_step_traj_current' in batch['obs']:
-            batch['obs']['robot0_eef_pos_step_traj_current'] = batch['obs']['robot0_eef_pos_step_traj_current'].view(
-              batch['obs']['robot0_eef_pos_step_traj_current'].shape[0], -1, 3
-            )
+        # if 'robot0_eef_pos_step_traj_current' in batch['obs']:
+        #     batch['obs']['robot0_eef_pos_step_traj_current'] = batch['obs']['robot0_eef_pos_step_traj_current'].view(
+        #       batch['obs']['robot0_eef_pos_step_traj_current'].shape[0], -1, 3
+        #     )
 
         # if 'robot0_eef_pos_step_traj_future' in batch['obs']:
         #     batch['obs']['robot0_eef_pos_step_traj_future'] = batch['obs']['robot0_eef_pos_step_traj_future'].view(
         #       batch['obs']['robot0_eef_pos_step_traj_future'].shape[0], -1, 3
         #     )
-
         return TensorUtils.to_device(TensorUtils.to_float(batch), self.device)
 
     def train_on_batch(self, batch, epoch, validate=False):
         """
         该方法在单个批次上训练模型
         """
+        # 阶段性训练更新
+        # self._maybe_update_stage(epoch)
+
         with TorchUtils.maybe_no_grad(no_grad=validate):
             info = super(Highlevel_GMM_pretrain, self).train_on_batch(batch, epoch, validate=validate)
             predictions, img_feat = self._forward_training(batch, epoch)
@@ -763,14 +775,40 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         #         )
         #         batch['obs']['robot0_eef_pos_step_traj_current'] = mixed_input
 
-        dists, img_feat = self.nets["policy"].forward_train(
-            obs_dict=batch["obs"],
-            goal_dict=batch["goal_obs"],
+        dists, L_geo, img_feat = self.nets["policy"].forward_train(
+            obs_dict=batch['obs'],
+            goal_dict=None,  #batch["goal_obs"],
             fill_mode='sliding_window',
             return_attention_weights=True,
+            stage = self._current_state
         )
 
-        assert len(dists.batch_shape) == 1, "@Highlevel_GMM_pretrain: action distribution must be 1D batch shape during training."
+        # 计算L1正则化损失（预测轨迹与真实轨迹的平均绝对误差）
+        true_action_traj = batch['obs']['robot0_action_future_traj']  # [batch, seq_len, 3] 或 [batch, total_dims]
+        # true_traj_d = torch.empty_like(true_traj)
+        # true_traj_d[:, 0, :] = true_traj[:, 0, :] - batch['obs']['robot0_eef_pos_past_traj'][:, -1, :]
+        # true_traj_d[:, 1:, :] = true_traj[:, 1:, :] - true_traj[:, :-1, :]
+        # pred_traj = batch['obs']['robot0_eef_pos_past_traj'][:, -1:, :] + torch.cumsum(dists, dim=1)  # 累积和还原位置
+        # L_l1_pos_delta = torch.nn.functional.smooth_l1_loss(dists, true_traj_d, reduction='mean')
+        L_l1 = torch.nn.functional.smooth_l1_loss(dists, true_action_traj, reduction='mean')
+
+        # 计算末端点损失
+        # L_endpoint = torch.nn.functional.smooth_l1_loss(
+        #     pred_traj[:, -1, :], 
+        #     true_traj[:, -1, :], 
+        #     reduction='mean'
+        # )
+
+
+        
+        # # 计算平滑正则化损失（相邻时间步的加速度惩罚）
+        # # 一阶差分（速度）
+        # pred_velocity = pred_traj[:, 1:] - pred_traj[:, :-1]  # [batch, seq_len-1, 3]
+        # # 二阶差分（加速度）
+        # pred_acceleration = pred_velocity[:, 1:] - pred_velocity[:, :-1]  # [batch, seq_len-2, 3]
+        # L_smooth = torch.mean(torch.norm(pred_acceleration, dim=-1))
+
+        # assert len(dists.batch_shape) == 1, "@Highlevel_GMM_pretrain: action distribution must be 1D batch shape during training."
 
         # 从完整轨迹中提取关键路径点
         # future_traj: [batch, 1, 30] -> reshape -> [batch, 10, 3]
@@ -784,8 +822,77 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         # keypoints_flat = keypoints.reshape(-1, 9).unsqueeze(1)  # [batch, 1, 9]
         
         # log_probs = dists.log_prob(keypoints_flat)
-        log_probs = dists.log_prob(batch["obs"]["robot0_eef_pos_step_traj_future"])
+
+        # batch["obs"]["robot0_eef_pos_future_traj"] = einops.rearrange(batch["obs"]["robot0_eef_pos_future_traj"], 'b t c -> b (t c)')#.view(-1, 5, 18)  # [batch, 5, 18]
+
+        if epoch >= 300 and epoch % 10 == 0 and not self._epoch_switch:
+            self._epoch_switch = True
+            self._ground_truth_traj = np.array(batch["obs"]["robot0_eef_pos_future_traj"].detach().cpu())
+            self._predicted_traj = np.array(dists.mean.detach().cpu())
+            # 绘制轨迹对比图
+            def plot_trajectory_comparison(ground_truth, predicted, save_path):
+              import matplotlib
+              matplotlib.use('TkAgg')  # 或 'Qt5Agg', 'GTK3Agg'
+              import matplotlib.pyplot as plt
+              from mpl_toolkits.mplot3d import Axes3D
+
+              fig = plt.figure()
+              ax = fig.add_subplot(111, projection='3d')
+
+              # 绘制真实轨迹 - 5段轨迹用不同颜色
+              colors = ['blue']#, 'cyan', 'navy', 'skyblue', 'dodgerblue']
+              gt_traj = ground_truth.reshape(-1, 30, 3)  # [batch, 6_points, xyz]
+              ax.plot(gt_traj[0, :, 0], gt_traj[0, :, 1], gt_traj[0, :, 2], 
+                  label=f'GT Seg1', color=colors[0], linestyle='-', linewidth=2)
+              # for i in range(5):
+              #   gt_traj = ground_truth[:, i, :].reshape(-1, 6, 3)  # [batch, 6_points, xyz]
+              #   ax.plot(gt_traj[0, :, 0], gt_traj[0, :, 1], gt_traj[0, :, 2], 
+              #      label=f'GT Seg{i+1}', color=colors[i], linestyle='-', linewidth=2)
+
+              # 绘制预测轨迹 - 5段轨迹用不同颜色
+              pred_colors = ['red']#, 'orange', 'darkred', 'salmon', 'coral']
+              pred_traj = predicted.reshape(-1, 30, 3)  # [batch, 6_points, xyz]
+              ax.plot(pred_traj[0, :, 0], pred_traj[0, :, 1], pred_traj[0, :, 2], 
+                  label=f'Pred Seg1', color=pred_colors[0], linestyle='--', linewidth=2)
+              # for i in range(5):
+              #   pred_traj = predicted[:, i, :].reshape(-1, 6, 3)  # [batch, 6_points, xyz]
+              #   ax.plot(pred_traj[0, :, 0], pred_traj[0, :, 1], pred_traj[0, :, 2], 
+              #      label=f'Pred Seg{i+1}', color=pred_colors[i], linestyle='--', linewidth=2)
+
+              ax.set_xlabel('X')
+              ax.set_ylabel('Y')
+              ax.set_zlabel('Z')
+              ax.legend()
+
+              # 显示图像窗口并等待手动关闭
+              plt.show()
+              
+              # # 窗口关闭后保存图像
+              # plt.savefig(save_path)
+              plt.close()
+              
+              return
+
+            plot_trajectory_comparison(
+                self._ground_truth_traj,
+                self._predicted_traj,
+                "/home/lsy/cjh/project1/Agent/ground_predicted_traj_analysis/trajectory_comparison.png"
+            )
+
+
         
+        if self._epoch_switch:
+            self._epoch_switch = False
+            self._ground_truth_traj = []
+            self._predicted_traj = []
+
+        # batch["obs"]["robot0_eef_pos_future_traj"] = einops.rearrange(batch["obs"]["robot0_eef_pos_future_traj"], 'b t c -> b (t c)')  # [batch, 60]
+        # log_probs = dists.log_prob(batch['obs']["robot0_eef_pos_future_traj"])
+
+        # log_probs = log_probs.mean()
+
+
+
         # 添加诊断信息（每100个batch打印一次）
         if not hasattr(self, '_diagnostic_counter'):
             self._diagnostic_counter = 0
@@ -793,49 +900,154 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         
         if self._diagnostic_counter % 1000 == 1:
             print(f"\n[Iter {self._diagnostic_counter}] Training Diagnostics:")
-            print(f"  Log prob: {log_probs.mean().item():.2f} (higher is better)")
             
-            # 检查预测质量
-            # 获取模态权重和每个模态的均值
-            mode_probs = dists.mixture_distribution.probs[0]  # [5] - 每个模态的权重
-            all_modes_mean = dists.component_distribution.mean[0]  # [5, 9]
-            true_keypoints_flat = batch["obs"]["robot0_eef_pos_step_traj_future"][0]  # [9]
-            # true_keypoints_flat = keypoints[0].reshape(-1)  # [3, 3] -> [9]
+            # 获取预测轨迹和真实轨迹
+            pred_traj = dists  # [batch, seq_len*3] 或 [batch, seq_len, 3]
+            # pred_traj = batch['obs']['robot0_eef_pos_past_traj'][:, -1:, :] + torch.cumsum(pred_traj_d, dim=1)  # 累积和还原位置
+            true_traj = batch['obs']['robot0_action_future_traj']  # [batch, seq_len*3] 或 [batch, seq_len, 3]
             
-            print(f"  Mode weights: {mode_probs.detach().cpu().numpy()}")
-            print(f"  Mode predictions vs ground truth:")
+            # 计算第一个样本的轨迹误差
+            sample_pred = pred_traj[0]  # [seq_len, 3]
+            sample_true = true_traj[0]  # [seq_len, 3]
             
-            best_mode_idx = None
-            best_error = float('inf')
+            # 计算每个时间步的欧氏距离误差
+            timestep_errors = torch.norm(sample_pred - sample_true, dim=1)  # [seq_len]
             
-            for mode_idx in range(all_modes_mean.shape[0]):
-                # 将每个模态的预测 reshape 成 [3, 3]
-                pred_keypoints = all_modes_mean[mode_idx].view(10, 3)  # [9] -> [3, 3]
-                true_keypoints = batch["obs"]["robot0_eef_pos_step_traj_future"][0].view(10, 3)  # [3, 3]
+            print(f"  Per-timestep trajectory errors (first sample):")
+            print(f"    Mean error: {timestep_errors.mean().item():.4f}")
+            print(f"    Max error: {timestep_errors.max().item():.4f}")
+            print(f"    Min error: {timestep_errors.min().item():.4f}")
+            
+            # 显示前5个和后5个时间步的误差
+            print(f"    All timesteps: {timestep_errors[:].detach().cpu().numpy()}")
+            # # 显示前5个和后5个时间步的误差
+            # print(f"    First 5 timesteps: {timestep_errors[:5].detach().cpu().numpy()}")
+            # print(f"    Last 5 timesteps: {timestep_errors[-5:].detach().cpu().numpy()}")
+            
+            # 计算整个batch的平均误差
+            batch_errors = torch.norm(pred_traj - true_traj, dim=2).mean(dim=1)  # [batch]
+            print(f"  Batch statistics:")
+            print(f"    Mean trajectory error: {batch_errors.mean().item():.4f}")
+            print(f"    Std trajectory error: {batch_errors.std().item():.4f}")
+            # print(f"\n[Iter {self._diagnostic_counter}] Training Diagnostics:")
+            # print(f"  Log prob: {log_probs.mean().item():.2f} (higher is better)")
+            
+            # # 检查预测质量
+            # # 获取模态权重和每个模态的均值
+            # mode_probs = dists.mixture_distribution.probs[0]  # [5] - 每个模态的权重
+            # all_modes_mean = dists.component_distribution.mean[0]  # [5, 9]
+            # true_keypoints_flat = batch['obs']["robot0_eef_pos_future_traj"][0]  # [9]
+            # # true_keypoints_flat = keypoints[0].reshape(-1)  # [3, 3] -> [9]
+            
+            # print(f"  Mode weights: {mode_probs.detach().cpu().numpy()}")
+            # print(f"  Mode predictions vs ground truth:")
+            
+            # best_mode_idx = None
+            # best_error = float('inf')
+            
+            # for mode_idx in range(all_modes_mean.shape[0]):
+            #     # 将每个模态的预测 reshape 成 [20, 3]
+
+            #     pred_keypoints = all_modes_mean[mode_idx]  # .view(20, 3)  # [9] -> [3, 3]
+            #     true_keypoints = batch["obs"]["robot0_eef_pos_future_traj"][0]  # .view(20, 3)  # [3, 3]
                 
-                # 计算每个关键点的欧氏距离误差
-                keypoint_errors = (pred_keypoints - true_keypoints).norm(dim=1)  # [3]
-                mean_error = keypoint_errors.mean().item()
-                weight = mode_probs[mode_idx].item()
+            #     # 计算每个关键点的欧氏距离误差
+            #     import ipdb; ipdb.set_trace()
+            #     keypoint_errors = (pred_keypoints - true_keypoints).norm(dim=1)  # [3]
+            #     mean_error = keypoint_errors.mean().item()
+            #     weight = mode_probs[mode_idx].mean().item()
                 
-                print(f"    Mode {mode_idx} (weight={weight:.3f}): "
-                      f"errors=[{keypoint_errors[0].item():.4f}, {keypoint_errors[1].item():.4f}, {keypoint_errors[2].item():.4f}, {keypoint_errors[3].item():.4f}, {keypoint_errors[4].item():.4f}, {keypoint_errors[5].item():.4f}, {keypoint_errors[6].item():.4f}, {keypoint_errors[7].item():.4f}, {keypoint_errors[8].item():.4f}, {keypoint_errors[9].item():.4f}], "
-                      f"mean={mean_error:.4f}")
+            #     print(f"    Mode {mode_idx} (weight={weight:.3f}): "
+            #           f"errors=[{keypoint_errors[0].item():.4f}, {keypoint_errors[1].item():.4f}, {keypoint_errors[2].item():.4f}, {keypoint_errors[3].item():.4f}, {keypoint_errors[4].item():.4f}, {keypoint_errors[5].item():.4f}, {keypoint_errors[6].item():.4f}, {keypoint_errors[7].item():.4f}, {keypoint_errors[8].item():.4f}, {keypoint_errors[9].item():.4f}], "
+            #           f"mean={mean_error:.4f}")
                 
-                if mean_error < best_error:
-                    best_error = mean_error
-                    best_mode_idx = mode_idx
+            #     if mean_error < best_error:
+            #         best_error = mean_error
+            #         best_mode_idx = mode_idx
             
-            print(f"  Best mode: {best_mode_idx} (mean error: {best_error:.4f})")
+            # print(f"  Best mode: {best_mode_idx} (mean error: {best_error:.4f})")
             
-            # 也显示混合均值的误差作为对比
-            mixture_pred = dists.mean[0].view(10, 3)  # [30] -> [10, 3]
-            mixture_errors = (mixture_pred - batch["obs"]["robot0_eef_pos_step_traj_future"][0].view(10, 3)).norm(dim=1)
-            print(f"  Mixture mean errors: [{mixture_errors[0].item():.4f}, {mixture_errors[1].item():.4f}, {mixture_errors[2].item():.4f}, {mixture_errors[3].item():.4f}, {mixture_errors[4].item():.4f}, {mixture_errors[5].item():.4f}, {mixture_errors[6].item():.4f}, {mixture_errors[7].item():.4f}, {mixture_errors[8].item():.4f}, {mixture_errors[9].item():.4f}], "
-                  f"mean={mixture_errors.mean().item():.4f}")
+            # # 也显示混合均值的误差作为对比
+            # mixture_pred = dists.mean[0]  # .view(20, 3)  # [20] -> [20, 3]
+            # mixture_errors = (mixture_pred - batch["obs"]["robot0_eef_pos_future_traj"][0]).norm(dim=1)  # .view(20, 3)).norm(dim=1)
+            # print(f"  Mixture mean errors: [{mixture_errors[0].item():.4f}, {mixture_errors[1].item():.4f}, {mixture_errors[2].item():.4f}, {mixture_errors[3].item():.4f}, {mixture_errors[4].item():.4f}, {mixture_errors[5].item():.4f}, {mixture_errors[6].item():.4f}, {mixture_errors[7].item():.4f}, {mixture_errors[8].item():.4f}, {mixture_errors[9].item():.4f}], "
+            #       f"mean={mixture_errors.mean().item():.4f}")
+                # print(f"\n[Iter {self._diagnostic_counter}] Training Diagnostics:")
+                # print(f"  Log prob: {log_probs.mean().item():.2f} (higher is better)")
+                
+                # # GMM输出形状: [batch, timesteps, modes, 3]
+                # # component_distribution.base_dist.mean: [batch, timesteps, modes, 3]
+                # # mixture_distribution.probs: [batch, timesteps, modes]
+                
+                # # 获取第一个样本的数据
+                # mode_probs = dists.mixture_distribution.probs[0]  # [timesteps, modes]
+                # all_modes_mean = dists.component_distribution.base_dist.mean[0]  # [timesteps, modes, 3]
+                
+                # true_traj = batch['obs']["robot0_eef_pos_future_traj"][0]  # [timesteps*3] 或 [timesteps, 3]
+                # if len(true_traj.shape) == 1:
+                #     true_traj = true_traj.view(-1, 3)  # [timesteps, 3]
+                
+                # num_timesteps = true_traj.shape[0]
+                # num_modes = all_modes_mean.shape[1]
+                
+                # print(f"\n  Per-timestep mode analysis:")
+                
+                # # 只显示前5个时间步，避免输出过长
+                # display_timesteps = min(num_timesteps, 5)
+                
+                # for t in range(display_timesteps):
+                #     mode_probs_t = mode_probs[t]  # [modes]
+                #     all_modes_mean_t = all_modes_mean[t]  # [modes, 3]
+                #     true_pos_t = true_traj[t]  # [3]
+                    
+                #     print(f"\n  Timestep {t}:")
+                #     print(f"    Mode weights: {mode_probs_t.detach().cpu().numpy()}")
+                    
+                #     best_mode_idx = None
+                #     best_error = float('inf')
+                    
+                #     for mode_idx in range(num_modes):
+                #         pred_pos = all_modes_mean_t[mode_idx]  # [3]
+                #         error = (pred_pos - true_pos_t).norm().item()
+                #         weight = mode_probs_t[mode_idx].item()
+                        
+                #         print(f"      Mode {mode_idx} (weight={weight:.3f}): error={error:.4f}")
+                        
+                #         if error < best_error:
+                #             best_error = error
+                #             best_mode_idx = mode_idx
+                    
+                #     print(f"    Best mode: {best_mode_idx} (error: {best_error:.4f})")
+                    
+                #     # 混合均值误差
+                #     mixture_pred_t = dists.mean[0, t]  # [3]
+                #     mixture_error_t = (mixture_pred_t - true_pos_t).norm().item()
+                #     print(f"    Mixture mean error: {mixture_error_t:.4f}")
+                
+                # # 整体轨迹统计（所有时间步）
+                # print(f"\n  Overall trajectory analysis:")
+                # all_timestep_mixture_errors = []
+                # all_timestep_best_errors = []
+                
+                # for t in range(num_timesteps):
+                #     mixture_pred_t = dists.mean[0, t]
+                #     mixture_error_t = (mixture_pred_t - true_traj[t]).norm().item()
+                #     all_timestep_mixture_errors.append(mixture_error_t)
+                    
+                #     # 计算该时间步最佳模态误差
+                #     all_modes_mean_t = all_modes_mean[t]
+                #     best_t_error = min([(all_modes_mean_t[i] - true_traj[t]).norm().item() 
+                #                        for i in range(num_modes)])
+                #     all_timestep_best_errors.append(best_t_error)
+                
+                # print(f"    Mean mixture error (all {num_timesteps} timesteps): {sum(all_timestep_mixture_errors) / len(all_timestep_mixture_errors):.4f}")
+                # print(f"    Mean best mode error (all {num_timesteps} timesteps): {sum(all_timestep_best_errors) / len(all_timestep_best_errors):.4f}")
 
         predictions = OrderedDict(
-            log_probs=log_probs,
+            l1_loss=L_l1,
+            # vel_loss=L_l1_pos_delta,
+            # endpoint_loss=L_endpoint,
+            geo_loss=L_geo,
         )
         return predictions, img_feat
     
@@ -843,10 +1055,13 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         """
         计算损失函数
         """
-        action_loss = -predictions["log_probs"].mean()
+        # action_loss = -predictions["log_probs"]
         return OrderedDict(
-            log_probs = -action_loss,
-            action_loss = action_loss,
+            l1_loss = predictions["l1_loss"],
+            # vel_loss = predictions["vel_loss"],
+            # endpoint_loss = predictions["endpoint_loss"],
+            # action_loss = action_loss,
+            geo_loss = predictions["geo_loss"],
         )
 
     def check_optimizer_state_device(self, optimizer, name="optimizer"):
@@ -893,11 +1108,139 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         policy_grad_norms = TorchUtils.backprop_for_loss(
             net=self.nets["policy"],
             optim=self.optimizers["policy"],
-            loss=losses["action_loss"],
+            loss=losses["l1_loss"] + 0.01 * losses["geo_loss"],  # + 0.5 * losses["vel_loss"] + 0.2 * losses["endpoint_loss"],
             # max_grad_norm=10.0,
         )
         info["policy_grad_norms"] = policy_grad_norms
         return info
+
+    def _set_trainable(self, module, flag: bool):
+        if module is None:
+          return
+        for p in module.parameters():
+            p.requires_grad = flag
+            # self.nets["pre_encoder"].nets['obs'].obs_nets['agentview_image'].nets
+
+    def _get_stage_from_epoch(self, epoch):
+        A_end = 135
+        B_end = 270
+        C1_end = 180
+        C2_end = 195
+
+        if epoch < A_end:
+            return 'A'
+        elif epoch < B_end:
+            return 'B'
+        elif epoch < C1_end:
+            return 'C1'
+        elif epoch < C2_end:
+            return 'C2'
+        else:
+            return 'C3'
+    
+    def _configure_policy_for_stage(self, stage):
+        policy = self.nets['policy']
+        pre_encoder = policy.pre_encoder.nets.obs.obs_nets  # NOTE: 封装太多层了
+
+        self._set_trainable(getattr(pre_encoder, 'robot0_eef_pos_step_traj_current',None), False)
+
+        self._set_trainable(getattr(pre_encoder, 'agentview_image',None), False)
+        self._set_trainable(getattr(pre_encoder, 'agentview_depth',None), False)
+        self._set_trainable(getattr(policy, 'traj_query_encoder',None), False)
+        self._set_trainable(getattr(policy, 'past_traj_encoder',None), False)
+        self._set_trainable(getattr(policy, 'sub_target_decoder',None), False)
+        self._set_trainable(getattr(policy, 'sub_segment_decoder',None), False)
+        self._set_trainable(getattr(policy, 'fusion_proj',None), False)
+        self._set_trainable(getattr(policy, 'gmm_head',None), False)
+
+        if stage == 'A':
+            self._set_trainable(getattr(pre_encoder, 'agentview_image',None), True)
+            self._set_trainable(getattr(policy, 'past_traj_encoder',None), True)
+            self._set_trainable(getattr(policy, 'traj_query_encoder',None), True)
+            self._set_trainable(getattr(policy, 'sub_target_decoder',None), True)
+            self._set_trainable(getattr(policy, 'gmm_head',None), True)
+        elif stage == 'B':
+            self._set_trainable(getattr(pre_encoder, 'agentview_depth',None), True)
+            self._set_trainable(getattr(policy, 'sub_segment_decoder',None), True)
+            self._set_trainable(getattr(policy, 'fusion_proj',None), True)
+            self._set_trainable(getattr(policy, 'gmm_head',None), True)
+        elif stage == 'C1':
+            self._set_trainable(getattr(pre_encoder, 'agentview_depth',None), True)
+            self._set_trainable(getattr(policy, 'sub_segment_decoder',None), True)
+            self._set_trainable(getattr(policy, 'fusion_proj',None), True)
+            self._set_trainable(getattr(policy, 'gmm_head',None), True)
+        elif stage == 'C2':
+            self._set_trainable(getattr(pre_encoder, 'agentview_depth',None), True)
+            self._set_trainable(getattr(policy, 'sub_segment_decoder',None), True)
+            self._set_trainable(getattr(policy, 'fusion_proj',None), True)
+            self._set_trainable(getattr(policy, 'gmm_head',None), True)
+            self._set_trainable(getattr(policy, 'sub_target_decoder',None), True)
+        elif stage == 'C3':
+            self._set_trainable(getattr(pre_encoder, 'agentview_depth',None), True)
+            self._set_trainable(getattr(policy, 'sub_segment_decoder',None), True)
+            self._set_trainable(getattr(policy, 'fusion_proj',None), True)
+            self._set_trainable(getattr(policy, 'gmm_head',None), True)
+            self._set_trainable(getattr(policy, 'sub_target_decoder',None), True)
+            self._set_trainable(getattr(policy, 'traj_query_encoder',None), True)
+            self._set_trainable(getattr(policy, 'past_traj_encoder',None), True)
+
+    def _rebuild_policy_optimizer_for_stage(self, stage):
+        policy = self.nets['policy']
+        pre_encoder = policy.pre_encoder.nets.obs.obs_nets  # NOTE: 封装太多层了
+        param_groups = []
+
+        def add_group(module, lr):
+            if module is None:
+                return
+            params = [p for p in module.parameters() if p.requires_grad]
+            if len(params) > 0:
+                param_groups.append({'params': params, 'lr': lr})
+        
+        if stage == 'A':
+            add_group(getattr(pre_encoder, 'agentview_image', None), 1e-4)
+            add_group(getattr(policy, 'past_traj_encoder', None), 1e-4)
+            add_group(getattr(policy, 'traj_query_encoder', None), 1e-4)
+            add_group(getattr(policy, 'sub_target_decoder', None), 1e-4)
+            add_group(getattr(policy, 'gmm_head', None), 1e-4)
+        elif stage in ['B', 'C1']:
+            add_group(getattr(pre_encoder, 'agentview_depth', None), 1e-4)
+            add_group(getattr(policy, 'sub_segment_decoder', None), 1e-4)
+            add_group(getattr(policy, 'fusion_proj', None), 1e-4)
+            add_group(getattr(policy, 'gmm_head', None), 1e-4)
+        elif stage == 'C2':
+            add_group(getattr(pre_encoder, 'agentview_depth', None), 1e-4)
+            add_group(getattr(policy, 'sub_segment_decoder', None), 1e-4)
+            add_group(getattr(policy, 'fusion_proj', None), 1e-4)
+            add_group(getattr(policy, 'gmm_head', None), 1e-4)
+            # rgb cross attn 用小lr
+            add_group(getattr(policy, 'sub_target_decoder', None), 3e-5)
+        elif stage == 'C3':
+            add_group(getattr(pre_encoder, 'agentview_depth', None), 1e-4)
+            add_group(getattr(policy, 'sub_segment_decoder', None), 1e-4)
+            add_group(getattr(policy, 'fusion_proj', None), 1e-4)
+            add_group(getattr(policy, 'gmm_head', None), 1e-4)
+            # rgb cross attn 用小lr
+            add_group(getattr(policy, 'sub_target_decoder', None), 3e-5)
+            add_group(getattr(policy, 'traj_query_encoder', None),3e-5)
+            add_group(getattr(policy, 'past_traj_encoder', None),3e-5)
+
+        self.optimizers['policy'] = torch.optim.AdamW(
+            param_groups,
+            weight_decay=1e-4,
+        )
+
+    def _maybe_update_stage(self, epoch):
+        if epoch == self._stage_epoch_cache:
+            return
+        self._stage_epoch_cache = epoch
+
+        new_stage = self._get_stage_from_epoch(epoch)
+        if new_stage != self._current_state:
+            self._current_state = new_stage
+            self._configure_policy_for_stage(new_stage)
+            self._rebuild_policy_optimizer_for_stage(new_stage)
+            print(f"Switched to stage {new_stage} at epoch {epoch}")
+
 
     def get_action(self, obs_dict, goal_dict=None):
         """
@@ -918,8 +1261,10 @@ class Highlevel_GMM_pretrain(PolicyAlgo):
         总结训练信息，用于tensorboard输出日志
         """
         log = PolicyAlgo.log_info(self, info)
-        log["Loss"] = info["losses"]["action_loss"].item()
-        log["Log_Likelihood"] = info["losses"]["log_probs"].item()
+        log["l1_loss"] = info["losses"]["l1_loss"].item()
+        log["geo_loss"] = info["losses"]["geo_loss"].item()
+        # log["vel_loss"] = info["losses"]["vel_loss"].item()
+        # log["endpoint_loss"] = info["losses"]["endpoint_loss"].item()
         if "policy_grad_norms" in info:
             log["Policy_Grad_Norms"] = info["policy_grad_norms"]
         return log

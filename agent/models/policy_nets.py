@@ -1,6 +1,7 @@
 
 from collections import OrderedDict
 
+import einops
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -444,50 +445,50 @@ class GMMActorNetwork(ActorNetwork):
             logits=(self.num_modes,),
         )
 
-    def forward_train(self, obs_dict, goal_dict=None, return_latent=False, return_attention_weights=False, fill_mode: str=None):
+    def forward_train(self, obs_dict, goal_dict=None, return_latent=False, return_attention_weights=False, fill_mode: str=None, stage: str=None):
 
         if return_latent and not return_attention_weights:
-            out, back_out = MIMO_MLP.forward(self, return_latent=return_latent, obs=obs_dict, goal=goal_dict, fill_mode=fill_mode)
+            out, L_geo, back_out = MIMO_MLP.forward(self, return_latent=return_latent, obs=obs_dict, goal=goal_dict, fill_mode=fill_mode, stage=stage)
         elif return_attention_weights and not return_latent:
-            out, img_feat = MIMO_MLP.forward(self, return_attention_weights=return_attention_weights, obs=obs_dict, goal=goal_dict, fill_mode=fill_mode)
+            out, L_geo, img_feat = MIMO_MLP.forward(self, return_attention_weights=return_attention_weights, obs=obs_dict, goal=goal_dict, fill_mode=fill_mode, stage=stage)
         elif return_latent and return_attention_weights:
-            out, img_feat, back_out = MIMO_MLP.forward(self, return_latent=return_latent, return_attention_weights=return_attention_weights, obs=obs_dict, goal=goal_dict, fill_mode=fill_mode)
+            out, L_geo, img_feat, back_out = MIMO_MLP.forward(self, return_latent=return_latent, return_attention_weights=return_attention_weights, obs=obs_dict, goal=goal_dict, fill_mode=fill_mode, stage=stage)
         else:
-            out = MIMO_MLP.forward(self, return_latent=return_latent, obs=obs_dict, goal=goal_dict, fill_mode=fill_mode)
+            out, L_geo = MIMO_MLP.forward(self, return_latent=return_latent, obs=obs_dict, goal=goal_dict, fill_mode=fill_mode, stage=stage)
 
-        means = out["mean"]
-        scales = out["scale"]
-        logits = out["logits"]
+        # means = out["mean"].view(32, 20, 5, 3)
+        # scales = out["scale"].view(32, 20, 5, 3)
+        # logits = out["logits"]
 
-        if not self.use_tanh:
-            means = torch.tanh(means)
+        # if not self.use_tanh:
+        #     means = torch.tanh(means)
 
-        if self.low_noise_eval and (not self.training):
-            scales = torch.ones_like(scales) * 1e-4
-        else:
-            scales = self.activations[self.std_activation](scales) + self.min_std
+        # if self.low_noise_eval and (not self.training):
+        #     scales = torch.ones_like(scales) * 1e-4
+        # else:
+        #     scales = self.activations[self.std_activation](scales) + self.min_std
         
-        component_distribution = D.Normal(loc=means, scale=scales)
-        component_distribution = D.Independent(component_distribution, 1)
+        # component_distribution = D.Normal(loc=means, scale=scales)
+        # component_distribution = D.Independent(component_distribution, 1)
 
-        mixture_distribution = D.Categorical(logits=logits)
+        # mixture_distribution = D.Categorical(logits=logits)
 
-        dist = D.MixtureSameFamily(
-            mixture_distribution=mixture_distribution,
-            component_distribution=component_distribution,
-        )
+        # dist = D.MixtureSameFamily(
+        #     mixture_distribution=mixture_distribution,
+        #     component_distribution=component_distribution,
+        # )
 
-        if self.use_tanh:
-            dist = TanhWrappedDistribution(base_dist=dist, scale=1.)
+        # if self.use_tanh:
+        #     dist = TanhWrappedDistribution(base_dist=dist, scale=1.)
 
         if return_latent and not return_attention_weights:
-            return dist, back_out
+            return out, L_geo, back_out
         elif return_attention_weights and not return_latent:
-            return dist, img_feat
+            return out, L_geo, img_feat
         elif return_latent and return_attention_weights:
-            return dist, img_feat, back_out
+            return out, L_geo, img_feat, back_out
         else:
-            return dist
+            return out, L_geo
     
     def forward(self, obs_dict, goal_dict=None):
         """

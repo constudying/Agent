@@ -22,8 +22,11 @@ import robomimic.utils.file_utils as FileUtils
 from robomimic.utils.log_utils import PrintLogger, DataLogger
 from agent.utils.train_utils import get_exp_dir, rollout_with_stats, load_data_for_training
 
+from agent.utils.dataset import H5WindowSamgpler, H5ValidWindowDataset, ValidDatasetConfig
+
 from agent.configs.base_config import config_factory
 from agent.algo.algo import algo_factory, RolloutPolicy
+from agent.scripts.monitor import Monitor
 
 
 def train(config, device):
@@ -127,24 +130,41 @@ def train(config, device):
     print("")
 
     # load training data
-    trainset, validset = load_data_for_training(
-        config, obs_keys=shape_meta["all_obs_keys"])
-    train_sampler = trainset.get_dataset_sampler()
-    print("\n============= Training Dataset =============")
-    print(trainset)
-    print("")
+    # trainset, validset = load_data_for_training(
+    #     config, obs_keys=shape_meta["all_obs_keys"])
+    # train_sampler = trainset.get_dataset_sampler()
+    # print("\n============= Training Dataset =============")
+    # print(trainset)
+    # print("")
 
-    # maybe retreve statistics for normalizing observations
+    # # maybe retreve statistics for normalizing observations
     obs_normalization_stats = None
-    if config.train.hdf5_normalize_obs:
-        obs_normalization_stats = trainset.get_obs_normalization_stats()
+    # if config.train.hdf5_normalize_obs:
+    #     obs_normalization_stats = trainset.get_obs_normalization_stats()
 
     # initialize data loaders
+    train_ds = H5WindowSamgpler(
+        folder='/home/lsy/cjh/project1/Agent/agent/datasets/playdata/image_demo_local_depth_step_image_heatmap_per_episode/train',
+        history_len=10,
+        pred_len=7,
+        past_downsample=1,
+        future_downsample=1,
+        samples_per_epoch=100000,
+        min_gap=1000,
+        keys={
+            "rgb": "/data/demo/obs/agentview_image",
+            "depth": "/data/demo/obs/agentview_depth",
+            "action": "/data/demo/actions",
+            "joint_pos": "/data/demo/obs/robot0_joint_pos",
+            "eef_pos": "/data/demo/obs/robot0_eef_pos",
+        }
+    )
+
     train_loader = DataLoader(
-        dataset=trainset,
-        sampler=train_sampler,
+        dataset=train_ds,
+        sampler=None,  # train_sampler,
         batch_size=config.train.batch_size,
-        shuffle=(train_sampler is None),
+        shuffle=False,  # (train_sampler is None),
         num_workers=config.train.num_data_workers,
         drop_last=True
     )
@@ -152,14 +172,34 @@ def train(config, device):
     if config.experiment.validate:
         # cap num workers for validation dataset at 1
         num_workers = min(config.train.num_data_workers, 1)
-        valid_sampler = validset.get_dataset_sampler()
+        # valid_sampler = validset.get_dataset_sampler()
+        cfg = ValidDatasetConfig(
+            path='/home/lsy/cjh/project1/Agent/agent/datasets/playdata/image_demo_local_depth_step_image_heatmap_per_episode/valid',
+            history_len=10,
+            pred_len=7,
+            past_downsample=1,
+            future_downsample=1,
+            stride=1,
+            max_windows_per_demo=None,
+            keys={
+                "rgb": "/data/demo/obs/agentview_image",
+                "depth": "/data/demo/obs/agentview_depth",
+                "action": "/data/demo/actions",
+                "joint_pos": "/data/demo/obs/robot0_joint_pos",
+                "eef_pos": "/data/demo/obs/robot0_eef_pos",
+            },
+            use_rgb=True,
+            use_depth=True,
+        )
+        valid_ds = H5ValidWindowDataset(cfg)
         valid_loader = DataLoader(
-            dataset=validset,
-            sampler=valid_sampler,
+            dataset=valid_ds,
+            # sampler=valid_sampler,
             batch_size=config.train.batch_size,
-            shuffle=(valid_sampler is None),
+            # shuffle=(valid_sampler is None),
+            shuffle=False,
             num_workers=num_workers,
-            drop_last=True
+            drop_last=False
         )
     else:
         valid_loader = None
@@ -174,9 +214,35 @@ def train(config, device):
     train_num_steps = config.experiment.epoch_every_n_steps
     valid_num_steps = config.experiment.validation_epoch_every_n_steps
 
+    # 设置monitor
+    monitor_layers = {
+        'image_to_depth.cross_attn_layers.0.multihead_attn': {
+            'alias': 'image_output_weights',
+            'record_type': 'single'
+        },
+        'depth_to_image.cross_attn_layers.2.multihead_attn': {
+            'alias': 'depth_output_weights',
+            'record_type': 'single'
+        },
+        'depth_to_image.cross_attn_layers.2.multihead_attn': {
+            'alias': 'depth_output_weights_epoch',
+            'record_type': 'epoch_full'
+        },
+    }
+    monitor_epochs = [1, 5, 10]
+    monitor = Monitor(model.nets['policy'],monitor_layers, monitor_epochs, output_dir='./monitor_outputs', batch_indices=[1,20])
+    batch_callback = monitor.create_batch_callback()
+
+
     for epoch in range(1, config.train.num_epochs + 1):  # epoch numbers start at 1
-        step_log = TrainUtils.run_epoch(model=model, data_loader=train_loader, epoch=epoch, num_steps=train_num_steps)
+        monitor.set_epoch(epoch)
+        step_log = TrainUtils.run_epoch(model=model, data_loader=train_loader, epoch=epoch, num_steps=train_num_steps, batch_callback=batch_callback)
         model.on_epoch_end(epoch)
+
+        single = monitor.get_single_data()
+        epoch_data = monitor.get_epoch_data()
+        import ipdb; ipdb.set_trace()
+
 
         # setup checkpoint path
         epoch_ckpt_name = "model_epoch_{}".format(epoch)
